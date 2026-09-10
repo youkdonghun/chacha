@@ -51,6 +51,9 @@ namespace ChachaCapture
                 Check(results, "Color parsing and text rendering without clipboard access", TestClipboardRendering);
                 Check(results, "Hotkey parsing and malformed-key rejection", TestHotkeys);
                 Check(results, "Keyboard chord recorder, modifier previews and navigation", CaptureRegressionTests.Recorder);
+                Check(results, "Manual capture disables all automatic selection and pins exact pixels", AutoDetectionTests.ManualSelectionAndPin);
+                Check(results, "Optional local pin close, aliases and toolbar key routing", PinCloseTests.Run);
+                Check(results, "Drawing toolbar labels and floating without save side effects", EditorUiRegressionTests.Run);
                 Check(results, "Optional hotkeys, recording suspension and automatic floating migration", delegate { CaptureRegressionTests.OptionalSettings(Path.Combine(testRoot, "optional-hotkeys")); });
                 Check(results, "Opaque desktop pixels, padded RGB rows and negative stride", CaptureRegressionTests.Pixels);
                 Check(results, "DXGI baked cursor detection respects valid output metadata", DesktopCursorTests.Detection);

@@ -72,6 +72,12 @@ namespace ChachaCapture
                 Assert(box.TranslateKeyboardInput(Keys.Enter, true, out data), "Enter was routed to dialog Save instead of recording.");
                 box.TranslateKeyboardInput(Keys.Enter, false, out data);
             }
+            using (HotkeyCaptureBox box = new HotkeyCaptureBox { AllowEscapeBinding = true })
+            {
+                box.Hotkey = "F9"; Invoke(box, "OnGotFocus", EventArgs.Empty);
+                Press(box, Keys.Escape); Assert(box.Hotkey == "Esc", "The floating-close field must record Esc rather than revert it.");
+                box.Hotkey = ""; Assert(box.Hotkey == "", "The floating-close shortcut must be optional.");
+            }
             for (int code = 0; code <= 255; code++) for (int mask = 0; mask < 8; mask++)
             {
                 Keys chord = (Keys)code | ((mask & 1) != 0 ? Keys.Control : 0) | ((mask & 2) != 0 ? Keys.Alt : 0) | ((mask & 4) != 0 ? Keys.Shift : 0);
@@ -85,13 +91,16 @@ namespace ChachaCapture
             Storage storage = new Storage(directory);
             storage.Settings.CaptureHotkey = storage.Settings.PinHotkey = storage.Settings.ToggleHotkey = storage.Settings.ClickThroughHotkey = storage.Settings.SwitchGroupHotkey = "";
             storage.Settings.AutoFloatCapture = false;
+            storage.Settings.ClosePinHotkey = "";
             storage.SaveSettings();
             AppSettings settings = new Storage(directory).Settings;
             Assert(settings.CaptureHotkey == "" && settings.PinHotkey == "" && settings.ToggleHotkey == "" && settings.ClickThroughHotkey == "" && settings.SwitchGroupHotkey == "", "Optional bindings did not survive restart.");
             Assert(!settings.AutoFloatCapture, "Disabled automatic floating did not survive restart.");
+            Assert(settings.ClosePinHotkey == "", "Cleared floating-close key did not survive restart.");
             File.WriteAllText(Path.Combine(directory, "settings.xml"), "<AppSettings><CaptureHotkey></CaptureHotkey></AppSettings>");
             settings = new Storage(directory).Settings;
             Assert(settings.CaptureHotkey == "" && settings.AutoFloatCapture, "Old profiles must preserve unbound keys and default automatic floating on.");
+            Assert(settings.ClosePinHotkey == "Esc", "Old profiles should default to Esc for closing the active pin.");
             using (HotkeyWindow window = new HotkeyWindow())
             {
                 int calls = 0; window.Pressed += delegate { calls++; };

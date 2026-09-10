@@ -26,6 +26,7 @@ internal static class DesktopIntegration
     {
         string root = Path.Combine(Path.GetTempPath(), "ChachaCapture-desktopqa-" + Guid.NewGuid().ToString("N"));
         string report = args[0];
+        bool workflowOnly = args.Contains("--workflow-only");
         CaptureApplication app = null;
         try
         {
@@ -33,6 +34,7 @@ internal static class DesktopIntegration
             app = new CaptureApplication(new[] { "--tray", "--ui-test", "--data-dir", root });
             app.Store.Settings.SaveFolder = app.Store.Settings.QuickSaveFolder = Path.Combine(root, "saved");
             app.Store.Settings.CaptureHotkey = app.Store.Settings.PinHotkey = app.Store.Settings.ToggleHotkey = app.Store.Settings.ClickThroughHotkey = app.Store.Settings.SwitchGroupHotkey = "";
+            app.Store.Settings.ClosePinHotkey = "";
             app.Store.Settings.AutoDetectElements = false; app.Store.Settings.AbortOnFocusLoss = false;
             app.ApplySettings();
             using (Bitmap image = new Bitmap(160, 100))
@@ -42,6 +44,7 @@ internal static class DesktopIntegration
                 Complete(app, image, CaptureOutcome.Copy, area);
                 Check(app.AllPins.Length == 1 && app.AllPins[0].Visible && app.AllPins[0].TopMost, "Copy did not automatically create a visible topmost floating image.");
                 PinForm first = app.AllPins[0];
+                Check(first.CloseHotkey == "", "New pins did not receive the optional close shortcut.");
                 Check(first.ImageScreenBounds == area, "Floating image moved away from the captured region.");
                 using (Bitmap pixels = first.ExportImage()) Check(pixels.GetPixel(5, 5).ToArgb() == Color.CornflowerBlue.ToArgb(), "Floating pixels changed.");
                 Check(Field(first, "floatingToolbar") is Form && ((Form)Field(first, "floatingToolbar")).Visible, "Floating controls were not revealed.");
@@ -54,12 +57,27 @@ internal static class DesktopIntegration
                 ClosePins(app);
                 foreach (string action in new[] { "CopyImage", "PinImage", "QuickSaveImage" })
                 {
+                    int savedBefore = Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0;
+                    int historyBefore = app.Store.History().Length;
+                    app.Store.Settings.AutoSave = action == "PinImage";
                     using (Bitmap desktop = new Bitmap(1920, 1080)) Call(app, "EditInline", image, desktop, new Rectangle(0, 0, 1920, 1080), area, "Pen", false);
                     EditorForm editor = ((List<EditorForm>)Field(app, "editors")).Last();
                     bool shownBeforeClose = false; editor.FormClosing += delegate { shownBeforeClose = app.AllPins.Length != 0; };
-                    Call(editor, action); Pump(40);
+                    if (action == "PinImage")
+                    {
+                        editor.Activate(); Pump(80);
+                        Call(Field(app, "hotkeys"), "WndProc", Message.Create(IntPtr.Zero, 0x312, new IntPtr(2), IntPtr.Zero));
+                    }
+                    else Call(editor, action);
+                    Pump(40);
                     Check(editor.IsDisposed && !shownBeforeClose, action + " showed floating before the editor closed.");
                     Check(app.AllPins.Length == 1 && app.AllPins[0].Visible, action + " did not create exactly one floating image.");
+                    if (action == "PinImage")
+                    {
+                        int savedAfter = Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0;
+                        Check(savedBefore == savedAfter && historyBefore == app.Store.History().Length, "Floating the editor triggered automatic export or capture history.");
+                    }
+                    app.Store.Settings.AutoSave = false;
                     ClosePins(app);
                 }
             }
@@ -74,7 +92,7 @@ internal static class DesktopIntegration
                     try
                     {
                         Check(hotkeys.IsSuspended, "Settings did not suspend global shortcuts.");
-                        foreach (string name in new[] { "capture", "pin", "toggle", "clickThrough", "switchGroup" })
+                        foreach (string name in new[] { "capture", "pin", "toggle", "clickThrough", "switchGroup", "closePin" })
                             Check(((HotkeyCaptureBox)Field(settings, name)).Hotkey == "", "Opening settings reset an unbound shortcut.");
                         Call(settings, "Save", settings, EventArgs.Empty);
                         Check(settings.DialogResult == DialogResult.OK, "Saving all shortcuts unbound failed.");
@@ -86,7 +104,8 @@ internal static class DesktopIntegration
             if (modalError != null) throw modalError;
             Check(!hotkeys.IsSuspended, "Settings exit did not resume registration.");
             Check(new Storage(root).Settings.CaptureHotkey == "", "Unbound capture shortcut did not persist.");
-            using (Form fixture = new Form { Text = "Chacha capture test canvas", FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, Bounds = Screen.PrimaryScreen.Bounds, BackColor = Color.FromArgb(32, 80, 128), TopMost = true })
+            Check(new Storage(root).Settings.ClosePinHotkey == "", "Unbound local close shortcut did not persist.");
+            if (!workflowOnly) using (Form fixture = new Form { Text = "Chacha capture test canvas", FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, Bounds = Screen.PrimaryScreen.Bounds, BackColor = Color.FromArgb(32, 80, 128), TopMost = true })
             {
                 fixture.Show(); fixture.Activate(); Pump(180);
                 Rectangle bounds;
@@ -145,8 +164,28 @@ internal static class DesktopIntegration
                 Check(Field(app, "overlay") == null && !(bool)Field(app, "capturing"), "Overlay remained active after completion.");
                 Check(whiteboard.Visible && whiteboard.ShowInTaskbar && whiteboard.WindowState == FormWindowState.Minimized, "Unfinished editor was lost or still covered the captured desktop.");
                 using (Bitmap pixels = app.AllPins[0].ExportImage()) Check(pixels.GetPixel(30, 30).ToArgb() == fixture.BackColor.ToArgb(), "Actual capture floated a blank/white image.");
-                ClosePins(app); whiteboard.Close(); fixture.Close();
+                ClosePins(app); whiteboard.Close();
+                app.Store.Settings.AutoSave = true;
+                int savedCount = Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0;
+                int historyCount = app.Store.History().Length;
+                Clipboard.SetText("Chacha floating-only QA marker");
+                app.BeginCapture(0, false, false); Pump(800);
+                overlay = (CaptureOverlay)Field(app, "overlay");
+                Call(hotkeys, "WndProc", Message.Create(IntPtr.Zero, 0x312, new IntPtr(2), IntPtr.Zero)); Pump(40);
+                Check(app.AllPins.Length == 0 && Field(app, "overlay") == overlay && overlay.SelectedScreenBounds.IsEmpty,
+                    "Floating before selection pasted clipboard data or closed the capture.");
+                Rectangle directArea = new Rectangle(fixture.Left + 40, fixture.Top + 40, 135, 90);
+                overlay.SetSelection(directArea);
+                Call(hotkeys, "WndProc", Message.Create(IntPtr.Zero, 0x312, new IntPtr(2), IntPtr.Zero)); Pump(80);
+                Check(Field(app, "overlay") == null && app.AllPins.Length == 1, "The global floating shortcut did not finish the current capture exactly once.");
+                Check(app.AllPins[0].ImageScreenBounds == directArea, "The global floating shortcut used clipboard geometry instead of the selected region.");
+                using (Bitmap direct = app.AllPins[0].ExportImage()) Check(direct.GetPixel(5, 5).ToArgb() == fixture.BackColor.ToArgb(), "The global floating shortcut used clipboard pixels instead of capture pixels.");
+                Check(Clipboard.GetText() == "Chacha floating-only QA marker", "Floating-only unexpectedly replaced the clipboard.");
+                int savedAfterPin = Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0;
+                Check(savedAfterPin == savedCount && app.Store.History().Length == historyCount, "Floating-only exported a file or added history despite its explicit action.");
+                app.Store.Settings.AutoSave = false; ClosePins(app); fixture.Close();
             }
+            else notes.Add("Live desktop capture checks explicitly skipped (--workflow-only).");
             app.Store.Settings.AutoFloatCapture = false; app.Store.Settings.KeepHistory = false;
             using (Bitmap unfinished = new Bitmap(83, 47))
             {

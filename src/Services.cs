@@ -68,6 +68,7 @@ namespace ChachaCapture
         public string ToggleHotkey = "Shift+F3";
         public string ClickThroughHotkey = "Ctrl+Alt+F3";
         public string SwitchGroupHotkey = "Ctrl+Shift+F3";
+        public string ClosePinHotkey = "Esc";
         public int SettingsVersion = 2;
         public bool PreferHtml = true;
         public bool PasteFilePaths = true;
@@ -328,6 +329,7 @@ namespace ChachaCapture
                 else if (part.Equals("Shift", StringComparison.OrdinalIgnoreCase)) modifiers |= 4;
                 else
                 {
+                    if (part.Equals("Esc", StringComparison.OrdinalIgnoreCase)) part = "Escape";
                     Keys parsed;
                     if (key != 0 || !Enum.TryParse<Keys>(part, true, out parsed) || !Enum.IsDefined(typeof(Keys), parsed) || (int)parsed < 8 || (int)parsed > 255) return false;
                     key = (uint)parsed;

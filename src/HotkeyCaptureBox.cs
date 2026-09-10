@@ -20,6 +20,7 @@ namespace ChachaCapture
         private int recordingSession;
 
         public event EventHandler HotkeyChanged;
+        public bool AllowEscapeBinding { get; set; }
 
         public HotkeyCaptureBox()
         {
@@ -245,7 +246,7 @@ namespace ChachaCapture
         private void RecordKey(Keys keyData)
         {
             Keys key = keyData & Keys.KeyCode;
-            if (keyData == Keys.Escape)
+            if (keyData == Keys.Escape && !AllowEscapeBinding)
             {
                 Hotkey = focusOriginal;
                 return;
@@ -285,6 +286,7 @@ namespace ChachaCapture
             switch (key)
             {
                 case Keys.Return: name = "Enter"; break;
+                case Keys.Escape: name = "Esc"; break;
                 case Keys.Prior: name = "PageUp"; break;
                 case Keys.Next: name = "PageDown"; break;
                 case Keys.Back: name = "Back"; break;

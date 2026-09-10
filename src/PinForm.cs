@@ -54,6 +54,10 @@ namespace ChachaCapture
         private readonly ToolStripMenuItem clickThroughMenu;
         private readonly ToolStripMenuItem thumbnailMenu;
         private readonly ToolStripMenuItem animationMenu;
+        private readonly ToolStripMenuItem closeMenu;
+        private string closeHotkey = "Esc";
+        private Keys closeKeyData = Keys.Escape;
+        private bool hasCloseHotkey = true;
 
         public event Action<Bitmap> EditRequested;
         public event Action StateChanged;
@@ -72,6 +76,27 @@ namespace ChachaCapture
         public string SourceText { get; set; }
         public string GroupId { get; set; }
         public bool ClosedByUser { get; set; }
+        /// <summary>Optional shortcut for this image and its toolbar, never a global binding.</summary>
+        public string CloseHotkey
+        {
+            get { return closeHotkey; }
+            set
+            {
+                closeHotkey = (value ?? String.Empty).Trim();
+                uint modifiers, key;
+                hasCloseHotkey = HotkeyWindow.Parse(closeHotkey, out modifiers, out key);
+                closeKeyData = hasCloseHotkey ? (Keys)key |
+                    ((modifiers & 2) != 0 ? Keys.Control : Keys.None) |
+                    ((modifiers & 1) != 0 ? Keys.Alt : Keys.None) |
+                    ((modifiers & 4) != 0 ? Keys.Shift : Keys.None) : Keys.None;
+                if (closeMenu != null) closeMenu.ShortcutKeyDisplayString = CloseShortcutText;
+                if (floatingToolbar != null) floatingToolbar.RefreshCloseShortcut();
+            }
+        }
+        private string CloseShortcutText
+        {
+            get { return !hasCloseHotkey || closeKeyData == (Keys.Control | Keys.W) ? "Ctrl+W" : closeHotkey + " / Ctrl+W"; }
+        }
         public bool IsSelected
         {
             get { return selected; }
@@ -234,7 +259,8 @@ namespace ChachaCapture
             menu.Items.Add(Item("이미지 그룹 관리…", "", delegate { Raise(ManageGroupsRequested); }));
             menu.Items.Add(Item("설정…", "Ctrl+Shift+P", delegate { Raise(PreferencesRequested); }));
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(Item("닫기 · 다시 불러올 수 있음", "Esc / Ctrl+W", delegate { HideByUser(); }));
+            closeMenu = Item("닫기 · 다시 불러올 수 있음", CloseShortcutText, delegate { HideByUser(); });
+            menu.Items.Add(closeMenu);
             menu.Items.Add(Item("완전히 삭제", "Shift+Esc", delegate { Close(); }));
             menu.Opening += delegate
             {
@@ -418,8 +444,8 @@ namespace ChachaCapture
             EnsureReachable();
             if (!Visible) Show();
             BringToFront();
-            Activate();
             RevealFloatingToolbar();
+            FocusForKeyboard();
         }
 
         /// <summary>Show a captured image as a separate, reachable window above other applications.</summary>
@@ -455,9 +481,16 @@ namespace ChachaCapture
             // Explicitly raise after Show so previously layered or owned pins cannot stay behind another topmost window.
             SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0043);
             BringToFront();
-            Activate();
             RevealFloatingToolbar();
+            FocusForKeyboard();
             QueueStateChanged();
+        }
+
+        private void FocusForKeyboard()
+        {
+            if (IsDisposed || disposing || !Visible || clickThrough) return;
+            Activate();
+            Focus();
         }
 
         private Point ClampFloatingLocation(Point location, Rectangle work)
@@ -597,6 +630,11 @@ namespace ChachaCapture
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            // Ctrl+W and Shift+Esc retain their fixed recoverable/permanent meanings.
+            // A configured local binding takes precedence over the other pin commands.
+            if (keyData == (Keys.Shift | Keys.Escape)) { Close(); return true; }
+            if (keyData == (Keys.Control | Keys.W) || (hasCloseHotkey && keyData == closeKeyData))
+            { HideByUser(); return true; }
             Keys key = keyData & Keys.KeyCode;
             if (magnifierVisible && key == Keys.C && (keyData & Keys.Control) == 0) { CopySampleColor(); return true; }
             if (magnifierVisible && (keyData & Keys.Control) == 0)
@@ -616,9 +654,6 @@ namespace ChachaCapture
                 case Keys.Control | Keys.Shift | Keys.S: QuickSave(); return true;
                 case Keys.Control | Keys.P: PrintImage(); return true;
                 case Keys.Control | Keys.Shift | Keys.P: Raise(PreferencesRequested); return true;
-                case Keys.Control | Keys.W: HideByUser(); return true;
-                case Keys.Escape: HideByUser(); return true;
-                case Keys.Shift | Keys.Escape: Close(); return true;
                 case Keys.Space: RequestEdit(); return true;
                 case Keys.D1: case Keys.NumPad1:
                     if (animation != null) StepFrame(-1); else Transform(RotateFlipType.Rotate90FlipNone); return true;
@@ -1048,6 +1083,7 @@ namespace ChachaCapture
 
         private void StartToolbarDrag()
         {
+            FocusForKeyboard();
             ReleaseCapture();
             SendWindowMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
         }
@@ -1056,6 +1092,7 @@ namespace ChachaCapture
         {
             private readonly PinForm pin;
             private readonly Button topmost;
+            private readonly Button closeButton;
             private readonly ToolTip tips = new ToolTip();
             private readonly Font toolbarFont = new Font("Malgun Gothic", 8.5F, FontStyle.Regular);
 
@@ -1085,7 +1122,9 @@ namespace ChachaCapture
                 });
                 ButtonAt("편집", 184, 44, "이 이미지에 표시하기 · Space", delegate { pin.RequestEdit(); });
                 ButtonAt("저장", 231, 44, "이미지 파일로 저장 · Ctrl+S", delegate { pin.SaveImage(); });
-                ButtonAt("×", 278, 39, "닫기 · Esc / Ctrl+W (다시 표시할 수 있습니다)", delegate { pin.HideByUser(); });
+                closeButton = ButtonAt("×", 278, 39, "", delegate { pin.HideByUser(); });
+                closeButton.AccessibleName = "플로팅 이미지 닫기";
+                RefreshCloseShortcut();
                 RefreshTopmost();
             }
 
@@ -1097,7 +1136,13 @@ namespace ChachaCapture
                 button.FlatAppearance.BorderSize = 0;
                 button.FlatAppearance.BorderColor = Color.FromArgb(54, 72, 82);
                 button.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 76, 86);
-                button.Click += action;
+                button.Click += delegate(object sender, EventArgs e)
+                {
+                    // WS_EX_NOACTIVATE keeps a hovering toolbar from stealing focus.
+                    // An intentional click must give the image its keyboard shortcuts.
+                    pin.FocusForKeyboard();
+                    if (action != null) action(sender, e);
+                };
                 tips.SetToolTip(button, hint);
                 Controls.Add(button);
                 return button;
@@ -1108,6 +1153,25 @@ namespace ChachaCapture
                 if (TopMost != pin.TopMost) TopMost = pin.TopMost;
                 topmost.Text = pin.TopMost ? "항상 위 ✓" : "항상 위";
                 topmost.BackColor = pin.TopMost ? Color.FromArgb(48, 101, 89) : Color.FromArgb(36, 47, 59);
+            }
+
+            internal void RefreshCloseShortcut()
+            {
+                string hint = "닫기 · " + pin.CloseShortcutText + " (다시 표시할 수 있습니다)";
+                tips.SetToolTip(closeButton, hint);
+                closeButton.AccessibleDescription = hint;
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left) pin.FocusForKeyboard();
+                base.OnMouseDown(e);
+            }
+
+            protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+            {
+                if (!pin.IsDisposed && pin.ProcessCmdKey(ref message, keyData)) return true;
+                return base.ProcessCmdKey(ref message, keyData);
             }
 
             protected override bool ShowWithoutActivation { get { return true; } }

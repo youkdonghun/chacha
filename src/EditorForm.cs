@@ -19,6 +19,7 @@ namespace ChachaCapture
         public string SaveDirectory { get; set; }
         public string QuickSaveDirectory { get; set; }
         public bool AutoFloatCapture { get; set; }
+        public string FloatingHotkey { get; set; }
         public bool IsInline { get; private set; }
         public bool IsPinEditing { get; private set; }
         public bool HasChanges
@@ -421,28 +422,29 @@ namespace ChachaCapture
             _header.Visible = false;
             _toolsPanel.Visible = false;
             _footer.Visible = false;
-            _inlineBar = new Panel { BackColor = _surface, Size = new Size(InlinePixels(548), InlinePixels(149)), Padding = new Padding(InlinePixels(2)), BorderStyle = BorderStyle.FixedSingle, AutoScroll = true };
-            string[] glyphs = { "↖", "□", "○", "➜", "╱", "✎", "▰", "T", "①", "▦", "◉", "⌗", "⌫", "⌁" };
+            _inlineBar = new Panel { BackColor = _surface, Size = new Size(InlinePixels(548), InlinePixels(190)), Padding = new Padding(InlinePixels(2)), BorderStyle = BorderStyle.FixedSingle, AutoScroll = true };
             foreach (KeyValuePair<Tool, Button> pair in _toolButtons)
             {
-                pair.Value.Text = glyphs[(int)pair.Key];
-                pair.Value.Width = InlinePixels(33);
-                pair.Value.Height = InlinePixels(29);
+                // Keep the Korean tool names visible in capture mode too. The previous 33px
+                // symbol-only buttons hid what each action did and clipped most symbols to "…".
+                pair.Value.Width = InlinePixels(70);
+                pair.Value.Height = InlinePixels(32);
                 pair.Value.Margin = new Padding(InlinePixels(2), InlinePixels(1), InlinePixels(2), InlinePixels(1));
-                pair.Value.Font = OwnFont("Segoe UI Symbol", 12F, FontStyle.Regular);
+                pair.Value.Font = OwnFont("Malgun Gothic", 9F, FontStyle.Regular);
             }
-            _toolRow.Parent = _inlineBar; _toolRow.Dock = DockStyle.None; _toolRow.SetBounds(InlinePixels(3), InlinePixels(3), InlinePixels(538), InlinePixels(34)); _toolRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
-            _optionsRow.Parent = _inlineBar; _optionsRow.Dock = DockStyle.None; _optionsRow.SetBounds(InlinePixels(3), InlinePixels(38), InlinePixels(538), InlinePixels(33)); _optionsRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
+            _toolRow.Parent = _inlineBar; _toolRow.Dock = DockStyle.None; _toolRow.WrapContents = true; _toolRow.AutoScroll = false;
+            _toolRow.SetBounds(InlinePixels(3), InlinePixels(3), InlinePixels(538), InlinePixels(74)); _toolRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
+            _optionsRow.Parent = _inlineBar; _optionsRow.Dock = DockStyle.None; _optionsRow.SetBounds(InlinePixels(3), InlinePixels(79), InlinePixels(538), InlinePixels(33)); _optionsRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
             bool afterUndo = false;
             foreach (Control control in _optionsRow.Controls)
             {
                 if (control == _undoButton) afterUndo = true;
                 if (afterUndo) control.Visible = false;
             }
-            _styleRow.Parent = _inlineBar; _styleRow.Dock = DockStyle.None; _styleRow.SetBounds(InlinePixels(3), InlinePixels(73), InlinePixels(538), InlinePixels(33)); _styleRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
+            _styleRow.Parent = _inlineBar; _styleRow.Dock = DockStyle.None; _styleRow.SetBounds(InlinePixels(3), InlinePixels(114), InlinePixels(538), InlinePixels(33)); _styleRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
             foreach (Control control in _styleRow.Controls)
                 if (control.Text == "인쇄" || control.Text == "빠른 저장" || control.Text == "편집 지우기") control.Visible = false;
-            FlowLayoutPanel actions = new FlowLayoutPanel { Location = new Point(InlinePixels(4), InlinePixels(110)), Size = new Size(InlinePixels(536), InlinePixels(33)), WrapContents = false, BackColor = _surface };
+            FlowLayoutPanel actions = new FlowLayoutPanel { Location = new Point(InlinePixels(4), InlinePixels(151)), Size = new Size(InlinePixels(536), InlinePixels(33)), WrapContents = false, BackColor = _surface };
             _undoButton = MakeButton("↶", 32, 28); _undoButton.Enabled = _undo.Count > 0; _undoButton.Click += delegate { Undo(); }; _tips.SetToolTip(_undoButton, "Ctrl+Z · 실행 취소");
             _redoButton = MakeButton("↷", 32, 28); _redoButton.Enabled = _redo.Count > 0; _redoButton.Click += delegate { Redo(); }; _tips.SetToolTip(_redoButton, "Ctrl+Y · 다시 실행");
             actions.Controls.AddRange(new Control[] { _undoButton, _redoButton });
@@ -532,6 +534,7 @@ namespace ChachaCapture
         {
             Tool selected = tool;
             Button button = MakeButton(name, tool == Tool.Mosaic ? 65 : 55, 32);
+            button.AccessibleName = name + " 도구";
             button.Margin = new Padding(2, 1, 2, 1);
             button.Font = OwnFont("Malgun Gothic", tool == Tool.Mosaic ? 8F : 8.5F, FontStyle.Regular);
             button.Click += delegate { SetTool(selected); };
@@ -1623,6 +1626,8 @@ namespace ChachaCapture
             }
         }
 
+        public void FloatSelection() { PinImage(); }
+
         private void PinImage()
         {
             FinishPolyline();
@@ -1633,7 +1638,7 @@ namespace ChachaCapture
                 if (handler == null) { SetStatus("이미지 고정 기능이 연결되지 않았습니다"); return; }
                 Bitmap image = CopyBitmap(_rendered);
                 try { handler(image); } catch { image.Dispose(); throw; }
-                NotifyCommitted();
+                if (IsPinEditing) NotifyCommitted();
                 SetStatus("이미지를 화면 위에 고정했습니다 · 고정 창은 드래그로 이동할 수 있습니다");
                 if (HasFloatingBars) CloseInline();
             }
@@ -1714,12 +1719,21 @@ namespace ChachaCapture
 
         private void SetStatus(string text) { if (_status != null) _status.Text = text; }
 
+        private bool IsFloatingShortcut(Keys keyData)
+        {
+            uint modifiers, key;
+            if (!HotkeyWindow.Parse(FloatingHotkey, out modifiers, out key)) return false;
+            Keys expected = (Keys)key | ((modifiers & 2) != 0 ? Keys.Control : Keys.None) |
+                ((modifiers & 1) != 0 ? Keys.Alt : Keys.None) | ((modifiers & 4) != 0 ? Keys.Shift : Keys.None);
+            return keyData == expected;
+        }
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == (Keys.Control | Keys.C)) { CopyImage(); return true; }
             if (keyData == (Keys.Control | Keys.S)) { SaveImage(); return true; }
             if (keyData == (Keys.Control | Keys.Shift | Keys.S)) { QuickSaveImage(); return true; }
-            if (keyData == (Keys.Control | Keys.T) || keyData == Keys.F3) { PinImage(); return true; }
+            if (keyData == (Keys.Control | Keys.T) || IsFloatingShortcut(keyData)) { PinImage(); return true; }
             if (keyData == (Keys.Control | Keys.P)) { PrintImage(); return true; }
             if (keyData == (Keys.Control | Keys.Z)) { Undo(); return true; }
             if (keyData == (Keys.Control | Keys.Y)) { Redo(); return true; }

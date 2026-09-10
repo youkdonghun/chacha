@@ -55,6 +55,8 @@ namespace ChachaCapture
         private readonly List<CaptureHistoryItem> _history = new List<CaptureHistoryItem>();
         private readonly List<ElementSnapshot> _elementSnapshots = new List<ElementSnapshot>();
         private bool _includeCursor;
+        private bool _automaticDetection = true;
+        private bool _snapshotsCollected;
         private bool _elementDetection = true;
         private bool _showMagnifier;
         private bool _rgbFormat;
@@ -84,13 +86,17 @@ namespace ChachaCapture
 
         public bool AbortOnFocusLoss { get; set; }
         public bool AutoFloatCapture { get; set; }
+        public string FloatingHotkey { get; set; }
         public string CaptureNotice { get; set; }
         public bool AutoDetectElements
         {
-            get { return _elementDetection; }
+            get { return _automaticDetection; }
             set
             {
-                _elementDetection = value;
+                _automaticDetection = value;
+                if (value) CollectDetectionSnapshots();
+                _hoverHierarchy.Clear();
+                _clickCandidate = Rectangle.Empty;
                 _hierarchyPoint = new Point(Int32.MinValue, Int32.MinValue);
                 UpdateWindowHover(); Invalidate();
             }
@@ -110,6 +116,9 @@ namespace ChachaCapture
             : this(desktop, desktopBounds, lastSelection, null, false) { }
 
         public CaptureOverlay(Bitmap desktop, Rectangle desktopBounds, Rectangle lastSelection, Bitmap cursorLayer, bool includeCursor)
+            : this(desktop, desktopBounds, lastSelection, cursorLayer, includeCursor, true) { }
+
+        public CaptureOverlay(Bitmap desktop, Rectangle desktopBounds, Rectangle lastSelection, Bitmap cursorLayer, bool includeCursor, bool autoDetectElements)
         {
             if (desktop == null) throw new ArgumentNullException("desktop");
             if (desktopBounds.Width != desktop.Width || desktopBounds.Height != desktop.Height)
@@ -120,6 +129,7 @@ namespace ChachaCapture
             _cleanDesktop = DesktopCapture.CloneOpaque(desktop);
             _cursorLayer = cursorLayer == null ? null : (Bitmap)cursorLayer.Clone();
             _includeCursor = includeCursor;
+            _automaticDetection = autoDetectElements;
             _desktop = ComposeDesktop(_cleanDesktop, _cursorLayer, _includeCursor);
             _desktopBounds = desktopBounds;
             _lastSelection = ToLocalClipped(lastSelection);
@@ -132,6 +142,7 @@ namespace ChachaCapture
             KeyPreview = true;
             AbortOnFocusLoss = true;
             AutoFloatCapture = true;
+            FloatingHotkey = "F3";
             DoubleBuffered = true;
             BackColor = Color.Black;
             Font = _normalFont;
@@ -142,9 +153,16 @@ namespace ChachaCapture
 
             Point mouse = System.Windows.Forms.Cursor.Position;
             _mousePoint = ClampPoint(new Point(mouse.X - desktopBounds.X, mouse.Y - desktopBounds.Y));
-            SnapshotWindows();
-            _elementSnapshots.AddRange(ElementSnapshots.Collect(_windowHandles, _desktopBounds));
+            if (_automaticDetection) CollectDetectionSnapshots();
             UpdateWindowHover();
+        }
+
+        /// <summary>Completes only a selected capture; clipboard contents are never used here.</summary>
+        public bool TryPinSelection()
+        {
+            if (IsDisposed || _completing || !_hasSelection || _selection.Width < 1 || _selection.Height < 1) return false;
+            Finish(CaptureOutcome.Pin);
+            return true;
         }
 
         public void SetSelection(Rectangle screenBounds)
@@ -251,6 +269,14 @@ namespace ChachaCapture
             return clipped;
         }
 
+        private void CollectDetectionSnapshots()
+        {
+            if (_snapshotsCollected) return;
+            _snapshotsCollected = true;
+            SnapshotWindows();
+            _elementSnapshots.AddRange(ElementSnapshots.Collect(_windowHandles, _desktopBounds));
+        }
+
         private void SnapshotWindows()
         {
             uint ownProcess = (uint)Process.GetCurrentProcess().Id;
@@ -283,6 +309,13 @@ namespace ChachaCapture
         private void UpdateWindowHover()
         {
             _hoverWindow = Rectangle.Empty;
+            if (!_automaticDetection)
+            {
+                _hoverHierarchy.Clear();
+                _hierarchyIndex = 0;
+                _hierarchyPoint = new Point(Int32.MinValue, Int32.MinValue);
+                return;
+            }
             if (_hierarchyPoint == _mousePoint && _hoverHierarchy.Count > 0)
             {
                 _hoverWindow = _hoverHierarchy[Math.Min(_hierarchyIndex, _hoverHierarchy.Count - 1)];
@@ -334,7 +367,7 @@ namespace ChachaCapture
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
-            if (_hasSelection || _dragPart != DragPart.None) return;
+            if (!_automaticDetection || _hasSelection || _dragPart != DragPart.None) return;
             UpdateWindowHover();
             if (_hoverHierarchy.Count == 0) return;
             _hierarchyIndex = Math.Max(0, Math.Min(_hoverHierarchy.Count - 1,
@@ -407,7 +440,7 @@ namespace ChachaCapture
             base.OnMouseMove(e);
             _mousePoint = ClampPoint(e.Location);
             _floatingTip.SetToolTip(this, HitToolbar(e.Location) == 9 ?
-                "캡처한 이미지를 다른 창 위에 띄워 두고 드래그·크기 조절 · Ctrl+T" : "");
+                "캡처한 이미지를 다른 창 위에 띄워 두고 드래그·크기 조절 · " + FloatingShortcutLabel : "");
             if (_pressedButton >= 0)
             {
                 Invalidate();
@@ -447,7 +480,9 @@ namespace ChachaCapture
             if (_dragPart == DragPart.New)
             {
                 _selection = MakeSelection(_dragStart, _mousePoint);
-                if (Math.Abs(_mousePoint.X - _dragStart.X) < 3 && Math.Abs(_mousePoint.Y - _dragStart.Y) < 3 &&
+                if (!_automaticDetection && _mousePoint == _dragStart)
+                    _selection = Rectangle.Empty;
+                else if (_automaticDetection && Math.Abs(_mousePoint.X - _dragStart.X) < 3 && Math.Abs(_mousePoint.Y - _dragStart.Y) < 3 &&
                     !_clickCandidate.IsEmpty)
                     _selection = _clickCandidate;
             }
@@ -468,7 +503,8 @@ namespace ChachaCapture
             base.OnMouseCaptureChanged(e);
             if (!Capture && _dragPart != DragPart.None)
             {
-                _hasSelection = _selection.Width > 0 && _selection.Height > 0;
+                _hasSelection = _selection.Width > 0 && _selection.Height > 0 &&
+                    (_automaticDetection || _dragPart != DragPart.New || _mousePoint != _dragStart);
                 _dragPart = DragPart.None;
                 Invalidate();
             }
@@ -565,9 +601,29 @@ namespace ChachaCapture
             }
         }
 
+        private bool IsFloatingShortcut(Keys keyData)
+        {
+            uint modifiers, key;
+            if (!HotkeyWindow.Parse(FloatingHotkey, out modifiers, out key)) return false;
+            Keys expected = (Keys)key | ((modifiers & 2) != 0 ? Keys.Control : Keys.None) |
+                ((modifiers & 1) != 0 ? Keys.Alt : Keys.None) | ((modifiers & 4) != 0 ? Keys.Shift : Keys.None);
+            return keyData == expected;
+        }
+
+        private string FloatingShortcutLabel
+        {
+            get
+            {
+                uint modifiers, key;
+                return !HotkeyWindow.Parse(FloatingHotkey, out modifiers, out key) || (modifiers == 2 && key == (uint)Keys.T) ?
+                    "Ctrl+T" : FloatingHotkey + " · Ctrl+T";
+            }
+        }
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (_completing) return true;
+            if (IsFloatingShortcut(keyData)) { TryPinSelection(); return true; }
             Keys key = keyData & Keys.KeyCode;
             Keys modifiers = keyData & Keys.Modifiers;
             if (key == Keys.Escape) { Close(); return true; }
@@ -578,6 +634,7 @@ namespace ChachaCapture
             }
             if (key == Keys.Tab && modifiers == Keys.None)
             {
+                if (!_automaticDetection) return true;
                 _elementDetection = !_elementDetection;
                 _hierarchyPoint = new Point(Int32.MinValue, Int32.MinValue);
                 UpdateWindowHover(); Invalidate(); return true;
@@ -848,7 +905,7 @@ namespace ChachaCapture
             }
             g.SmoothingMode = smoothing;
             string[] descriptions = { "사각형", "타원", "화살표", "연결선", "펜 · B", "텍스트 · T", "모자이크", "흐리게",
-                "저장 Ctrl+S · Shift 클릭 빠른 저장", "다른 창 위에 띄워 두고 드래그·크기 조절 · Ctrl+T",
+                "저장 Ctrl+S · Shift 클릭 빠른 저장", "다른 창 위에 띄워 두고 드래그·크기 조절 · " + FloatingShortcutLabel,
                 AutoFloatCapture ? "복사+플로팅 Enter · Ctrl+C · 더블클릭" : "복사 Enter · Ctrl+C · 더블클릭", "취소 Esc" };
             int hover = HitToolbar(_mousePoint);
             for (int i = 0; i < descriptions.Length; i++)
@@ -870,7 +927,7 @@ namespace ChachaCapture
                         Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             }
             string hintText = hover >= 0 ? descriptions[hover] :
-                (AutoFloatCapture ? "Enter 복사+플로팅" : "Enter 복사") + " · Ctrl+T 플로팅 · 방향키 이동 · Space 도구 모음";
+                (AutoFloatCapture ? "Enter 복사+플로팅" : "Enter 복사") + " · " + FloatingShortcutLabel + " 플로팅 · 방향키 이동 · Space 도구 모음";
             if (_historyIndex >= 0 && hover < 0) hintText = "기록 " + (_historyIndex + 1) + "/" + _history.Count + "  ·  , 이전 / . 다음  ·  Enter 복사";
             Rectangle hint = new Rectangle(bar.X + 6, bar.Y + 47, bar.Width - 12, 18);
             TextRenderer.DrawText(g, hintText, _smallFont, hint, Color.FromArgb(175, 188, 201),
@@ -1016,11 +1073,13 @@ namespace ChachaCapture
             }
             g.SmoothingMode = smoothing;
             Rectangle heading = new Rectangle(hint.X + 8, hint.Y + 9, hint.Width - 16, 24);
-            TextRenderer.DrawText(g, "드래그하여 캡처 · 창을 클릭하여 선택", _boldFont, heading, Color.White,
+            TextRenderer.DrawText(g, _automaticDetection ? "드래그하여 캡처 · 창을 클릭하여 선택" : "드래그하여 원하는 영역을 직접 선택하세요", _boldFont, heading, Color.White,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
                 TextFormatFlags.NoPadding);
             Rectangle detail = new Rectangle(hint.X + 8, hint.Y + 37, hint.Width - 16, 19);
-            string instruction = (_elementDetection ? "UI 요소 감지" : "창 감지") + " · Tab 전환 · 휠 계층 · C 색상 · Esc 취소";
+            string instruction = _automaticDetection ?
+                (_elementDetection ? "UI 요소 감지" : "창 감지") + " · Tab 전환 · 휠 계층 · C 색상 · Esc 취소" :
+                "자동 영역 감지 꺼짐 · C 색상 · Esc 취소";
             TextRenderer.DrawText(g, instruction, _normalFont, detail, _accent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
                 TextFormatFlags.NoPadding);

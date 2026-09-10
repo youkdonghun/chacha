@@ -161,7 +161,9 @@ namespace ChachaCapture
             if (!String.IsNullOrEmpty(conflict)) Notify("단축키를 등록하지 못했습니다: " + conflict + "\n설정에서 다른 키를 지정하세요. 트레이 메뉴는 사용할 수 있습니다.");
             if (dashboard != null && !dashboard.IsDisposed) dashboard.RefreshSettings();
             foreach (EditorForm editor in editors) editor.SaveDirectory = Store.Settings.SaveFolder;
+            foreach (EditorForm editor in editors) editor.FloatingHotkey = Store.Settings.PinHotkey;
             foreach (PinForm pin in pins) pin.SaveDirectory = Store.Settings.SaveFolder;
+            foreach (PinForm pin in pins) pin.CloseHotkey = Store.Settings.ClosePinHotkey;
             foreach (PinForm pin in pins) pin.QuickSaveDirectory = Store.Settings.QuickSaveFolder;
             foreach (EditorForm editor in editors) editor.QuickSaveDirectory = Store.Settings.QuickSaveFolder;
         }
@@ -249,11 +251,12 @@ namespace ChachaCapture
                             return;
                         }
                         Rectangle initial = fullscreen ? bounds : repeat ? Store.Settings.LastSelection : requested;
-                        overlay = new CaptureOverlay(desktop, bounds, initial.IsEmpty ? Store.Settings.LastSelection : initial, cursor, Store.Settings.IncludeCursor);
+                        overlay = new CaptureOverlay(desktop, bounds, initial.IsEmpty ? Store.Settings.LastSelection : initial, cursor, Store.Settings.IncludeCursor, Store.Settings.AutoDetectElements);
                         overlay.AbortOnFocusLoss = Store.Settings.AbortOnFocusLoss;
                         overlay.CompleteOnSelection = output != null;
                         overlay.AutoDetectElements = Store.Settings.AutoDetectElements;
                         overlay.AutoFloatCapture = Store.Settings.AutoFloatCapture;
+                        overlay.FloatingHotkey = Store.Settings.PinHotkey;
                         overlay.CaptureNotice = DesktopCapture.LastReport == null ? "" : DesktopCapture.LastReport.Notice;
                         List<CaptureHistoryItem> history = new List<CaptureHistoryItem>();
                         try
@@ -313,6 +316,12 @@ namespace ChachaCapture
         {
             if (result.Outcome == CaptureOutcome.Color) { Clipboard.SetText(result.ColorHex); Notify(result.ColorHex + " 복사됨 · " + Store.Settings.PinHotkey + " 키로 색상표 플로팅"); return; }
             if (result.Outcome == CaptureOutcome.Edit) { EditInline(result.Image, result.Desktop, result.DesktopBounds, result.ScreenBounds, result.InitialTool); return; }
+            if (result.Outcome == CaptureOutcome.Pin)
+            {
+                PinImage(result.Image, result.ScreenBounds);
+                Store.Settings.LastSelection = result.ScreenBounds; Store.SaveSettings();
+                return;
+            }
             if (output != null) { CompleteOutput(result.Image, result.ScreenBounds, output); return; }
             bool clipboardFailed = false;
             if (result.Outcome == CaptureOutcome.Copy)
@@ -337,6 +346,7 @@ namespace ChachaCapture
         public void EditImage(Bitmap image)
         {
             EditorForm form = new EditorForm(image); form.SaveDirectory = Store.Settings.SaveFolder; form.Icon = (Icon)icon.Clone(); editors.Add(form);
+            form.FloatingHotkey = Store.Settings.PinHotkey;
             if (UiTestMode) form.ShowInTaskbar = true;
             form.QuickSaveDirectory = Store.Settings.QuickSaveFolder;
             form.ImageCommitted += delegate(Bitmap rendered) { using (rendered) RecordImage(rendered); };
@@ -347,6 +357,7 @@ namespace ChachaCapture
         private void EditInline(Bitmap image, Bitmap desktop, Rectangle desktopBounds, Rectangle imageBounds, string tool, bool whiteboard = false)
         {
             EditorForm form = new EditorForm(image, desktop, desktopBounds, imageBounds); form.SaveDirectory = Store.Settings.SaveFolder; form.QuickSaveDirectory = Store.Settings.QuickSaveFolder; editors.Add(form);
+            form.FloatingHotkey = Store.Settings.PinHotkey;
             if (UiTestMode) form.ShowInTaskbar = true;
             form.WhiteboardMode = whiteboard;
             form.AutoFloatCapture = Store.Settings.AutoFloatCapture;
@@ -360,7 +371,11 @@ namespace ChachaCapture
                     RecordImage(rendered, current); Store.Settings.LastSelection = current; Store.SaveSettings();
                 }
             };
-            form.PinRequested += delegate(Bitmap rendered) { if (floating != null) floating.Dispose(); floating = rendered; floatingBounds = form.CurrentScreenBounds; };
+            form.PinRequested += delegate(Bitmap rendered)
+            {
+                if (floating != null) floating.Dispose(); floating = rendered; floatingBounds = form.CurrentScreenBounds;
+                Store.Settings.LastSelection = floatingBounds; Store.SaveSettings();
+            };
             form.FormClosed += delegate
             {
                 editors.Remove(form);
@@ -378,6 +393,7 @@ namespace ChachaCapture
         private PinForm AddPin(Bitmap image, string id)
         {
             PinForm pin = new PinForm(image); pin.SaveDirectory = Store.Settings.SaveFolder; pin.Icon = (Icon)icon.Clone(); pin.PersistentId = id;
+            pin.CloseHotkey = Store.Settings.ClosePinHotkey;
             if (UiTestMode) pin.ShowInTaskbar = true;
             pin.GroupId = Store.Settings.ActiveGroup;
             pin.QuickSaveDirectory = Store.Settings.QuickSaveFolder;
@@ -389,6 +405,7 @@ namespace ChachaCapture
                     if (editingPins.Contains(pin)) return;
                     Point position = pin.Location; double scale = pin.ScaleFactor; string sourceText = pin.SourceText;
                     EditorForm editor = new EditorForm(rendered, pin.ImageScreenBounds); editor.SaveDirectory = Store.Settings.SaveFolder; editor.Icon = (Icon)icon.Clone(); editors.Add(editor);
+                    editor.FloatingHotkey = Store.Settings.PinHotkey;
                     if (UiTestMode) editor.ShowInTaskbar = true;
                     editor.QuickSaveDirectory = Store.Settings.QuickSaveFolder;
                     editor.ImageCommitted += delegate(Bitmap edited) { using (edited) RecordImage(edited); };
@@ -433,6 +450,14 @@ namespace ChachaCapture
         }
         public void PinClipboard()
         {
+            if (Exiting || settingsForm != null) return;
+            // During a capture the floating shortcut always belongs to the current selection.
+            // A missing selection must not paste stale clipboard contents or restore an old pin.
+            if (overlay != null && !overlay.IsDisposed) { overlay.TryPinSelection(); return; }
+            if (capturing) return;
+            EditorForm activeEditor = editors.LastOrDefault(e => !e.IsDisposed && e.Visible &&
+                e.WindowState != FormWindowState.Minimized && (e.ContainsFocus || e == Form.ActiveForm));
+            if (activeEditor != null) { activeEditor.FloatSelection(); return; }
             PinForm recovered = closedPins.LastOrDefault(p => !p.IsDisposed && p.GroupId == Store.Settings.ActiveGroup);
             if (recovered != null) { closedPins.Remove(recovered); recovered.ClosedByUser = false; recovered.RestoreInteractive(); SchedulePersist(); return; }
             try

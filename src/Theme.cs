@@ -93,7 +93,10 @@ namespace ChachaCapture
             }
             Rectangle textBounds = Rectangle.Inflate(ClientRectangle, -5, -3);
             if (pressed) textBounds.Offset(0, 1);
-            TextFormatFlags flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+            // Small editor controls already have an explicit inset. GDI's extra overhang padding
+            // otherwise turns short Korean labels and single glyphs into ellipses.
+            TextFormatFlags flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
             if (!UseMnemonic) flags |= TextFormatFlags.NoPrefix;
             else if (!ShowKeyboardCues) flags |= TextFormatFlags.HidePrefix;
             TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, Enabled ? ForeColor : Theme.Mix(ForeColor, surroundings, .5f), flags);

@@ -183,7 +183,7 @@ namespace ChachaCapture
     {
         private readonly CaptureApplication app;
         private readonly SettingsPageHost tabs;
-        private readonly HotkeyCaptureBox capture, pin, toggle, clickThrough, switchGroup;
+        private readonly HotkeyCaptureBox capture, pin, toggle, clickThrough, switchGroup, closePin;
         private readonly TextBox folder, quickFolder;
         private readonly CheckBox autoFloatCapture, cursor, detect, abort, restore, keep, tray, startup, autoSave, preferHtml, pasteFilePaths;
         private readonly ComboBox captureMode;
@@ -221,20 +221,23 @@ namespace ChachaCapture
             Panel storagePage = Page("저장 · 기록");
             Panel pastePage = Page("고정 · 시작");
 
-            capture = ShortcutField(shortcutsPage, "영역 캡처", ValidHotkey(s.CaptureHotkey, defaults.CaptureHotkey), 26);
-            pin = ShortcutField(shortcutsPage, "클립보드 플로팅", ValidHotkey(s.PinHotkey, defaults.PinHotkey), 92);
-            toggle = ShortcutField(shortcutsPage, "모든 플로팅 창 숨기기 / 표시", ValidHotkey(s.ToggleHotkey, defaults.ToggleHotkey), 158);
-            clickThrough = ShortcutField(shortcutsPage, "모든 플로팅 창 클릭 통과 전환", ValidHotkey(s.ClickThroughHotkey, defaults.ClickThroughHotkey), 224);
-            switchGroup = ShortcutField(shortcutsPage, "다음 이미지 그룹으로 전환", ValidHotkey(s.SwitchGroupHotkey, defaults.SwitchGroupHotkey), 290);
+            capture = ShortcutField(shortcutsPage, "영역 캡처", ValidHotkey(s.CaptureHotkey, defaults.CaptureHotkey), 18);
+            pin = ShortcutField(shortcutsPage, "선택 영역 / 클립보드 플로팅", ValidHotkey(s.PinHotkey, defaults.PinHotkey), 74);
+            toggle = ShortcutField(shortcutsPage, "모든 플로팅 창 숨기기 / 표시", ValidHotkey(s.ToggleHotkey, defaults.ToggleHotkey), 130);
+            clickThrough = ShortcutField(shortcutsPage, "모든 플로팅 창 클릭 통과 전환", ValidHotkey(s.ClickThroughHotkey, defaults.ClickThroughHotkey), 186);
+            switchGroup = ShortcutField(shortcutsPage, "다음 이미지 그룹으로 전환", ValidHotkey(s.SwitchGroupHotkey, defaults.SwitchGroupHotkey), 242);
+            closePin = ShortcutField(shortcutsPage, "활성 플로팅 창 닫기", ValidHotkey(s.ClosePinHotkey, defaults.ClosePinHotkey), 298);
+            closePin.AllowEscapeBinding = true;
+            closePin.AccessibleDescription = "활성 플로팅 창을 닫는 키입니다. Esc를 눌러 지정할 수 있고 해제로 비워 둘 수 있습니다.";
             RoundedPanel shortcutHelp = new RoundedPanel { Location = new Point(20, 359), Size = new Size(702, 65), CornerRadius = 13, OutlineColor = Color.Transparent };
             shortcutsPage.Controls.Add(shortcutHelp);
-            Note(shortcutHelp, "입력란 클릭 → 원하는 키 누르기 → 설정 저장\n필요 없는 단축키는 해제해도 됩니다.  ·  Tab: 다음 항목  ·  Esc: 입력 취소", 14, 10, 675, 47);
+            Note(shortcutHelp, "입력란 클릭 → 원하는 키 누르기 → 설정 저장 · 필요 없는 키는 해제\nTab: 다음 항목 · Esc: 입력 취소 (플로팅 닫기 항목에서는 Esc 지정)", 14, 10, 675, 47);
 
             autoFloatCapture = Check(capturePage, "캡처 완료 후 이미지를 플로팅 창으로 띄우기", s.AutoFloatCapture, 26);
             cursor = Check(capturePage, "처음부터 마우스 커서 포함", s.IncludeCursor, 88);
             Note(capturePage, "캡처 중 ` 키로 마우스 커서를 표시하거나 숨길 수 있습니다.", 47, 119, 620, 35);
-            detect = Check(capturePage, "버튼과 입력란 등 화면 요소 자동 감지", s.AutoDetectElements, 165);
-            Note(capturePage, "Tab 키로 창 선택과 요소 선택을 전환하고, 휠로 선택 범위를 조절합니다.", 47, 197, 620, 37);
+            detect = Check(capturePage, "창과 화면 요소의 영역 자동 감지", s.AutoDetectElements, 165);
+            Note(capturePage, "끄면 드래그로만 영역을 지정합니다. 켜면 Tab·휠로 감지 대상을 바꿉니다.", 47, 197, 620, 37);
             abort = Check(capturePage, "다른 앱으로 전환하면 캡처 취소", s.AbortOnFocusLoss, 248);
             Note(capturePage, "캡처를 유지한 채 다른 앱을 이용하려면 이 옵션을 끄세요.", 47, 280, 620, 36);
             Label captureModeLabel = Ui.Label("캡처 방식", 10, Ui.Text); captureModeLabel.Location = new Point(27, 322); capturePage.Controls.Add(captureModeLabel);
@@ -485,7 +488,7 @@ namespace ChachaCapture
         private void Save(object sender, EventArgs e)
         {
             validation.Text = "";
-            HotkeyCaptureBox[] fields = { capture, pin, toggle, clickThrough, switchGroup };
+            HotkeyCaptureBox[] fields = { capture, pin, toggle, clickThrough, switchGroup, closePin };
             string[] keys = fields.Select(f => f.Hotkey.Trim()).ToArray();
             uint modifiers, key;
             System.Collections.Generic.HashSet<string> seen = new System.Collections.Generic.HashSet<string>();
@@ -500,6 +503,10 @@ namespace ChachaCapture
                 {
                     ShowValidation("각 동작에 서로 다른 단축키를 지정해 주세요.", 0, fields[i]); return;
                 }
+                if (i == 5 && modifiers == 4 && key == (uint)Keys.Escape)
+                {
+                    ShowValidation("Shift+Esc는 이미지 완전 삭제 키입니다. 닫기에는 Esc 또는 다른 키를 지정해 주세요.", 0, fields[i]); return;
+                }
                 string conflict;
                 if (!HotkeyWindow.CheckAvailability(keys[i], out conflict))
                 {
@@ -511,7 +518,7 @@ namespace ChachaCapture
             AppSettings previous = app.Store.Settings;
             AppSettings next = new AppSettings
             {
-                CaptureHotkey = keys[0], PinHotkey = keys[1], ToggleHotkey = keys[2], ClickThroughHotkey = keys[3], SwitchGroupHotkey = keys[4],
+                CaptureHotkey = keys[0], PinHotkey = keys[1], ToggleHotkey = keys[2], ClickThroughHotkey = keys[3], SwitchGroupHotkey = keys[4], ClosePinHotkey = keys[5],
                 AutoFloatCapture = autoFloatCapture.Checked, CaptureMode = (DesktopCaptureMode)captureMode.SelectedIndex, PreferGpuCapture = previous.PreferGpuCapture, IncludeCursor = cursor.Checked, AutoDetectElements = detect.Checked, AbortOnFocusLoss = abort.Checked,
                 RestorePins = restore.Checked, KeepHistory = keep.Checked, StartInTray = tray.Checked,
                 AutoSave = autoSave.Checked, PreferHtml = preferHtml.Checked, PasteFilePaths = pasteFilePaths.Checked,

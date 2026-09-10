@@ -5,6 +5,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCompany("Chacha")]
 [assembly: AssemblyProduct("Chacha Capture")]
 [assembly: AssemblyCopyright("Copyright © 2026 youkdonghun")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 [assembly: ComVisible(false)]
