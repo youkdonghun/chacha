@@ -50,6 +50,12 @@ namespace ChachaCapture
                 Check(results, "History retention and lossless PNG pixels", delegate { TestHistory(Path.Combine(testRoot, "history")); });
                 Check(results, "Color parsing and text rendering without clipboard access", TestClipboardRendering);
                 Check(results, "Hotkey parsing and malformed-key rejection", TestHotkeys);
+                Check(results, "Keyboard chord recorder, modifier previews and navigation", CaptureRegressionTests.Recorder);
+                Check(results, "Optional hotkeys, recording suspension and automatic floating migration", delegate { CaptureRegressionTests.OptionalSettings(Path.Combine(testRoot, "optional-hotkeys")); });
+                Check(results, "Opaque desktop pixels, padded RGB rows and negative stride", CaptureRegressionTests.Pixels);
+                Check(results, "DXGI baked cursor detection respects valid output metadata", DesktopCursorTests.Detection);
+                Check(results, "Update UI cancellation, retries and installer failure keep the app safe", UpdateUiRegressionTests.Run);
+                Check(results, "Update release provenance, checksums, x64 format and installer paths (19 groups)", delegate { UpdateTests.Run(Path.Combine(testRoot, "updates")); });
                 Check(results, "Pin clone ownership, full-resolution transforms and native click-through", TestPin);
                 Check(results, "Editor copy ownership and crop undo/redo pixel fidelity", TestEditorHistory);
                 Check(results, "Mosaic averages only the requested region", TestMosaic);

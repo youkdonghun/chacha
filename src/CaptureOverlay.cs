@@ -66,6 +66,7 @@ namespace ChachaCapture
         private readonly Font _normalFont = new Font("Malgun Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
         private readonly Font _smallFont = new Font("Malgun Gothic", 8F, FontStyle.Regular, GraphicsUnit.Point);
         private readonly Font _boldFont = new Font("Malgun Gothic", 10F, FontStyle.Bold, GraphicsUnit.Point);
+        private readonly ToolTip _floatingTip = new ToolTip { InitialDelay = 350, ReshowDelay = 100, AutoPopDelay = 6500, ShowAlways = true };
         private readonly Color _accent = Color.FromArgb(65, 224, 190);
         private Rectangle _selection;
         private Rectangle _hoverWindow;
@@ -82,6 +83,7 @@ namespace ChachaCapture
         public bool CompleteOnSelection { get; set; }
 
         public bool AbortOnFocusLoss { get; set; }
+        public bool AutoFloatCapture { get; set; }
         public bool AutoDetectElements
         {
             get { return _elementDetection; }
@@ -114,7 +116,7 @@ namespace ChachaCapture
 
             if (cursorLayer != null && cursorLayer.Size != desktop.Size)
                 throw new ArgumentException("Cursor layer must match desktop dimensions.", "cursorLayer");
-            _cleanDesktop = (Bitmap)desktop.Clone();
+            _cleanDesktop = DesktopCapture.CloneOpaque(desktop);
             _cursorLayer = cursorLayer == null ? null : (Bitmap)cursorLayer.Clone();
             _includeCursor = includeCursor;
             _desktop = ComposeDesktop(_cleanDesktop, _cursorLayer, _includeCursor);
@@ -128,6 +130,7 @@ namespace ChachaCapture
             TopMost = true;
             KeyPreview = true;
             AbortOnFocusLoss = true;
+            AutoFloatCapture = true;
             DoubleBuffered = true;
             BackColor = Color.Black;
             Font = _normalFont;
@@ -402,6 +405,8 @@ namespace ChachaCapture
         {
             base.OnMouseMove(e);
             _mousePoint = ClampPoint(e.Location);
+            _floatingTip.SetToolTip(this, HitToolbar(e.Location) == 9 ?
+                "캡처한 이미지를 다른 창 위에 띄워 두고 드래그·크기 조절 · Ctrl+T" : "");
             if (_pressedButton >= 0)
             {
                 Invalidate();
@@ -692,7 +697,7 @@ namespace ChachaCapture
         {
             // Anchor to the monitor containing the selection's bottom-right pixel; it stays still while hovering.
             Rectangle monitor = GetMonitorBounds(new Point(_selection.Right - 1, _selection.Bottom - 1));
-            int width = Math.Min(510, Math.Max(1, monitor.Width - 16));
+            int width = Math.Min(610, Math.Max(1, monitor.Width - 16));
             int height = Math.Min(71, Math.Max(1, monitor.Height - 16));
             int x = Fit(_selection.Right - width, monitor.Left + 8, monitor.Right - width - 8);
             int y = _selection.Bottom + 12;
@@ -703,8 +708,11 @@ namespace ChachaCapture
 
         private Rectangle GetToolbarButton(Rectangle bar, int index)
         {
-            int left = bar.X + 7 + (bar.Width - 14) * index / 12;
-            int right = bar.X + 7 + (bar.Width - 14) * (index + 1) / 12;
+            // The floating action receives three icon slots so its purpose remains visible without hovering.
+            int start = index <= 9 ? index : index + 2;
+            int span = index == 9 ? 3 : 1;
+            int left = bar.X + 7 + (bar.Width - 14) * start / 14;
+            int right = bar.X + 7 + (bar.Width - 14) * (start + span) / 14;
             return new Rectangle(left, bar.Y + 7, Math.Max(1, right - left - 3), 34);
         }
 
@@ -834,7 +842,8 @@ namespace ChachaCapture
             using (Pen border = new Pen(Color.FromArgb(73, 85, 100)))
                 g.DrawRectangle(border, bar.X, bar.Y, bar.Width - 1, bar.Height - 1);
             string[] descriptions = { "사각형", "타원", "화살표", "연결선", "펜 · B", "텍스트 · T", "모자이크", "흐리게",
-                "저장 Ctrl+S · Shift 클릭 빠른 저장", "화면에 고정 Ctrl+T · 휠 버튼", "복사 Enter · Ctrl+C · 더블클릭", "취소 Esc" };
+                "저장 Ctrl+S · Shift 클릭 빠른 저장", "다른 창 위에 띄워 두고 드래그·크기 조절 · Ctrl+T",
+                AutoFloatCapture ? "복사+플로팅 Enter · Ctrl+C · 더블클릭" : "복사 Enter · Ctrl+C · 더블클릭", "취소 Esc" };
             int hover = HitToolbar(_mousePoint);
             for (int i = 0; i < descriptions.Length; i++)
             {
@@ -846,8 +855,13 @@ namespace ChachaCapture
                     using (Brush background = new SolidBrush(fill)) g.FillRectangle(background, button);
                 }
                 DrawToolIcon(g, button, i, i == 10 ? _accent : Color.FromArgb(228, 236, 242));
+                if (i == 9)
+                    TextRenderer.DrawText(g, "화면에 띄우기", _smallFont,
+                        new Rectangle(button.X + 28, button.Y + 1, Math.Max(1, button.Width - 31), button.Height - 2),
+                        Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             }
-            string hintText = hover >= 0 ? descriptions[hover] : "방향키 이동 · Ctrl 확대 · Shift 축소 · Space 도구 모음";
+            string hintText = hover >= 0 ? descriptions[hover] :
+                (AutoFloatCapture ? "Enter 복사+플로팅" : "Enter 복사") + " · Ctrl+T 플로팅 · 방향키 이동 · Space 도구 모음";
             if (_historyIndex >= 0 && hover < 0) hintText = "기록 " + (_historyIndex + 1) + "/" + _history.Count + "  ·  , 이전 / . 다음  ·  Enter 복사";
             Rectangle hint = new Rectangle(bar.X + 6, bar.Y + 47, bar.Width - 12, 18);
             TextRenderer.DrawText(g, hintText, _smallFont, hint, Color.FromArgb(175, 188, 201),
@@ -856,7 +870,7 @@ namespace ChachaCapture
 
         private void DrawToolIcon(Graphics g, Rectangle button, int index, Color color)
         {
-            int x = button.X + button.Width / 2, y = button.Y + button.Height / 2;
+            int x = index == 9 ? button.X + 14 : button.X + button.Width / 2, y = button.Y + button.Height / 2;
             SmoothingMode previous = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using (Pen pen = new Pen(color, 1.8F))
@@ -1007,6 +1021,7 @@ namespace ChachaCapture
                 _normalFont.Dispose();
                 _smallFont.Dispose();
                 _boldFont.Dispose();
+                _floatingTip.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -1022,16 +1037,14 @@ namespace ChachaCapture
 
         /// <summary>Returns a clean snapshot and a separately owned transparent cursor layer.</summary>
         public static Bitmap CaptureDesktopLayers(out Rectangle bounds, out Bitmap cursorLayer)
+        { return CaptureDesktopLayers(out bounds, out cursorLayer, true); }
+
+        public static Bitmap CaptureDesktopLayers(out Rectangle bounds, out Bitmap cursorLayer, bool preferGpu)
         {
-            bounds = SystemInformation.VirtualScreen;
-            if (bounds.Width <= 0 || bounds.Height <= 0)
-                throw new InvalidOperationException("No desktop display is available.");
-            Bitmap image = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+            Bitmap image = DesktopCapture.Capture(out bounds, preferGpu);
             cursorLayer = null;
             try
             {
-                using (Graphics graphics = Graphics.FromImage(image))
-                    graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
                 cursorLayer = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
                 DrawCursorLayer(cursorLayer, image, bounds);
                 return image;
@@ -1049,7 +1062,7 @@ namespace ChachaCapture
             if (desktop == null) throw new ArgumentNullException("desktop");
             if (cursorLayer != null && cursorLayer.Size != desktop.Size)
                 throw new ArgumentException("Cursor layer must match the desktop dimensions.", "cursorLayer");
-            Bitmap result = (Bitmap)desktop.Clone();
+            Bitmap result = DesktopCapture.CloneOpaque(desktop);
             try
             {
                 if (includeCursor && cursorLayer != null)

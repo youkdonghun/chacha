@@ -20,6 +20,8 @@ namespace ChachaCapture
         {
             EnableDpi();
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+            int updateExitCode;
+            if (UpdateService.TryHandleUpdate(args, out updateExitCode)) return updateExitCode;
             if (args.Contains("--self-test")) return SelfTests.Run(args);
             bool first;
             using (Mutex mutex = new Mutex(true, "Local\\ChachaCapture-54FB3242", out first))
@@ -29,7 +31,12 @@ namespace ChachaCapture
                 {
                     Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                     Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e) { Report(e.Exception); };
-                    using (CaptureApplication app = new CaptureApplication(args)) Application.Run(app);
+                    using (CaptureApplication app = new CaptureApplication(args))
+                    {
+                        string updateError;
+                        if (UpdateService.TryReadUpdateError(args, out updateError)) MessageBox.Show(updateError, "Chacha Capture · 업데이트 결과", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        Application.Run(app);
+                    }
                     return 0;
                 }
                 catch (Exception e) { Report(e); return 1; }
@@ -72,10 +79,13 @@ namespace ChachaCapture
         private readonly System.Windows.Forms.Timer persistTimer;
         private System.Windows.Forms.Timer captureTimer;
         private DashboardForm dashboard;
+        private SettingsForm settingsForm;
+        private UpdateForm updateForm;
         private CaptureOverlay overlay;
         private bool capturing;
         private bool restoring;
         private bool movingPeers;
+        private string hotkeyConflict;
         private uint lastFileClipboardSequence;
         private bool hasPastedFiles;
         private readonly List<PinForm> closedPins = new List<PinForm>();
@@ -116,6 +126,7 @@ namespace ChachaCapture
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("대시보드 · 캡처 기록", null, delegate { ShowDashboard(); });
             menu.Items.Add("설정", null, delegate { ShowSettings(); });
+            menu.Items.Add("업데이트 확인…", null, delegate { ShowUpdates(); });
             menu.Items.Add("종료", null, delegate { Shutdown(); });
             tray.ContextMenuStrip = menu;
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) BeginCapture(0, false, false); else if (e.Button == MouseButtons.Middle) PinClipboard(); };
@@ -131,6 +142,7 @@ namespace ChachaCapture
         {
             Store.SaveSettings();
             string conflict = hotkeys.Register(Store.Settings);
+            if (!hotkeys.IsSuspended) hotkeyConflict = conflict;
             if (!String.IsNullOrEmpty(conflict)) Notify("단축키를 등록하지 못했습니다: " + conflict + "\n설정에서 다른 키를 지정하세요. 트레이 메뉴는 사용할 수 있습니다.");
             if (dashboard != null && !dashboard.IsDisposed) dashboard.RefreshSettings();
             foreach (EditorForm editor in editors) editor.SaveDirectory = Store.Settings.SaveFolder;
@@ -150,8 +162,39 @@ namespace ChachaCapture
         {
             if (dashboard == null || dashboard.IsDisposed) dashboard = new DashboardForm(this);
             dashboard.RefreshHistory(); dashboard.Show(); dashboard.WindowState = FormWindowState.Normal; dashboard.Activate();
+            if (!String.IsNullOrWhiteSpace(hotkeyConflict)) dashboard.SetStatus("단축키 충돌: " + hotkeyConflict + " · 설정에서 다른 키를 지정하거나 지워 주세요.");
         }
-        public void ShowSettings() { using (SettingsForm form = new SettingsForm(this)) { if (dashboard != null && dashboard.Visible) form.ShowDialog(dashboard); else form.ShowDialog(); } }
+        public void ShowSettings()
+        {
+            if (settingsForm != null) { settingsForm.Activate(); return; }
+            hotkeys.Suspend();
+            try
+            {
+                using (SettingsForm form = new SettingsForm(this))
+                {
+                    settingsForm = form;
+                    if (dashboard != null && dashboard.Visible) form.ShowDialog(dashboard); else form.ShowDialog();
+                }
+            }
+            finally
+            {
+                settingsForm = null;
+                if (!Exiting)
+                {
+                    string conflict = hotkeys.Resume(Store.Settings);
+                    hotkeyConflict = conflict;
+                    if (!String.IsNullOrEmpty(conflict)) Notify("단축키를 등록하지 못했습니다: " + conflict + "\n설정에서 다른 키를 지정하세요.");
+                }
+            }
+        }
+        public void ShowUpdates()
+        {
+            if (Exiting) return;
+            if (updateForm != null && !updateForm.IsDisposed) { updateForm.Show(); updateForm.Activate(); return; }
+            updateForm = new UpdateForm(this);
+            updateForm.FormClosed += delegate { updateForm = null; };
+            updateForm.Show(); updateForm.Activate();
+        }
         public void Notify(string message)
         {
             tray.BalloonTipTitle = "Chacha Capture"; tray.BalloonTipText = message; tray.ShowBalloonTip(2500);
@@ -161,11 +204,14 @@ namespace ChachaCapture
         { BeginCapture(seconds, fullscreen, repeat, Rectangle.Empty, null); }
         private void BeginCapture(double seconds, bool fullscreen, bool repeat, Rectangle requested, string output)
         {
-            if (capturing || Exiting) return;
+            if (capturing || Exiting || settingsForm != null) return;
             if (repeat && (Store.Settings.LastWidth < 1 || Store.Settings.LastHeight < 1)) { Notify("먼저 영역을 한 번 캡처해 주세요."); return; }
             capturing = true;
             bool restoreDashboard = dashboard != null && dashboard.Visible;
             if (restoreDashboard) dashboard.Hide();
+            // Fullscreen annotation/whiteboard windows must not become the next frozen desktop.
+            List<EditorForm> hiddenEditors = editors.Where(e => !e.IsDisposed && e.Visible && e.WindowState != FormWindowState.Minimized).ToList();
+            foreach (EditorForm editor in hiddenEditors) editor.Hide();
             captureTimer = new System.Windows.Forms.Timer { Interval = seconds > 0 ? Math.Max(1, (int)(seconds * 1000)) : 200 };
             captureTimer.Tick += delegate
             {
@@ -173,16 +219,16 @@ namespace ChachaCapture
                 try
                 {
                     Rectangle bounds; Bitmap cursor;
-                    using (Bitmap desktop = CaptureOverlay.CaptureDesktopLayers(out bounds, out cursor))
+                    using (Bitmap desktop = CaptureOverlay.CaptureDesktopLayers(out bounds, out cursor, Store.Settings.PreferGpuCapture))
                     using (cursor)
                     {
                         if ((fullscreen || repeat || !requested.IsEmpty) && output != null)
                         {
                             Rectangle captureBounds = fullscreen ? bounds : Rectangle.Intersect(bounds, repeat ? Store.Settings.LastSelection : requested);
-                            if (captureBounds.Width < 1 || captureBounds.Height < 1) { Notify("최근 영역이 현재 화면 밖에 있습니다. 새 영역을 선택해 주세요."); capturing = false; if (restoreDashboard) ShowDashboard(); return; }
+                            if (captureBounds.Width < 1 || captureBounds.Height < 1) { Notify("최근 영역이 현재 화면 밖에 있습니다. 새 영역을 선택해 주세요."); capturing = false; RestoreCaptureEditors(hiddenEditors, true); if (restoreDashboard) ShowDashboard(); return; }
                             using (Bitmap composite = CaptureOverlay.ComposeDesktop(desktop, cursor, Store.Settings.IncludeCursor))
                             using (Bitmap image = composite.Clone(new Rectangle(captureBounds.X - bounds.X, captureBounds.Y - bounds.Y, captureBounds.Width, captureBounds.Height), PixelFormat.Format32bppArgb))
-                            { CompleteOutput(image, captureBounds, output); }
+                            { RestoreCaptureEditors(hiddenEditors, false); CompleteOutput(image, captureBounds, output); }
                             capturing = false;
                             return;
                         }
@@ -191,6 +237,7 @@ namespace ChachaCapture
                         overlay.AbortOnFocusLoss = Store.Settings.AbortOnFocusLoss;
                         overlay.CompleteOnSelection = output != null;
                         overlay.AutoDetectElements = Store.Settings.AutoDetectElements;
+                        overlay.AutoFloatCapture = Store.Settings.AutoFloatCapture;
                         List<CaptureHistoryItem> history = new List<CaptureHistoryItem>();
                         try
                         {
@@ -203,37 +250,53 @@ namespace ChachaCapture
                         finally { foreach (CaptureHistoryItem item in history) item.Dispose(); }
                         if (!initial.IsEmpty) overlay.SetSelection(initial);
                     }
-                    bool completed = false;
-                    overlay.Completed += delegate(CaptureResult result)
+                    CaptureResult pending = null;
+                    overlay.Completed += delegate(CaptureResult result) { pending = result; };
+                    overlay.FormClosed += delegate
                     {
-                        completed = true;
-                        try
-                        {
-                            using (result)
-                            {
-                                if (result.Outcome == CaptureOutcome.Color) { Clipboard.SetText(result.ColorHex); Notify(result.ColorHex + " 복사됨 · " + Store.Settings.PinHotkey + " 키로 색상표 고정"); return; }
-                                if (result.Outcome == CaptureOutcome.Edit)
-                                { EditInline(result.Image, result.Desktop, result.DesktopBounds, result.ScreenBounds, result.InitialTool); return; }
-                                if (output != null) { CompleteOutput(result.Image, result.ScreenBounds, output); return; }
-                                if (result.Outcome == CaptureOutcome.Copy) { ClipboardImages.Copy(result.Image); Notify("이미지를 클립보드에 복사했습니다."); }
-                                else if (result.Outcome == CaptureOutcome.Pin) PinImage(result.Image);
-                                else if (result.Outcome == CaptureOutcome.Save) { if (!SaveImage(result.Image)) return; }
-                                else if (result.Outcome == CaptureOutcome.QuickSave) QuickSave(result.Image);
-                                else if (result.Outcome == CaptureOutcome.Print) { if (!PrintImage(result.Image)) return; }
-                                else EditImage(result.Image);
-                                Store.Settings.LastSelection = result.ScreenBounds;
-                                RecordImage(result.Image, result.ScreenBounds, result.Outcome != CaptureOutcome.QuickSave);
-                                Store.SaveSettings();
-                            }
-                        }
+                        overlay = null;
+                        RestoreCaptureEditors(hiddenEditors, pending == null);
+                        if (pending == null) { capturing = false; if (restoreDashboard && !Exiting) ShowDashboard(); return; }
+                        // Finish the old overlay before showing any new topmost image/editor.
+                        try { using (pending) { if (!Exiting) CompleteCapture(pending, output); } }
                         catch (Exception e) { Program.Report(e); }
+                        finally { capturing = false; }
                     };
-                    overlay.FormClosed += delegate { overlay = null; capturing = false; if (!completed && restoreDashboard && !Exiting) ShowDashboard(); };
                     overlay.Show(); overlay.Activate();
                 }
-                catch (Exception e) { capturing = false; if (restoreDashboard) ShowDashboard(); Program.Report(e); }
+                catch (Exception e) { capturing = false; RestoreCaptureEditors(hiddenEditors, true); if (restoreDashboard) ShowDashboard(); Program.Report(e); }
             };
             captureTimer.Start();
+        }
+        private void RestoreCaptureEditors(List<EditorForm> hidden, bool canceled)
+        {
+            if (Exiting) return;
+            foreach (EditorForm editor in hidden)
+            {
+                if (editor.IsDisposed) continue;
+                // Preserve unfinished work, but keep an older full-screen canvas off the new capture.
+                if (!canceled) { editor.ShowInTaskbar = true; editor.WindowState = FormWindowState.Minimized; }
+                editor.Show();
+            }
+        }
+        private void CompleteCapture(CaptureResult result, string output)
+        {
+            if (result.Outcome == CaptureOutcome.Color) { Clipboard.SetText(result.ColorHex); Notify(result.ColorHex + " 복사됨 · " + Store.Settings.PinHotkey + " 키로 색상표 플로팅"); return; }
+            if (result.Outcome == CaptureOutcome.Edit) { EditInline(result.Image, result.Desktop, result.DesktopBounds, result.ScreenBounds, result.InitialTool); return; }
+            if (output != null) { CompleteOutput(result.Image, result.ScreenBounds, output); return; }
+            bool clipboardFailed = false;
+            if (result.Outcome == CaptureOutcome.Copy)
+            {
+                try { ClipboardImages.Copy(result.Image); Notify(Store.Settings.AutoFloatCapture ? "복사 완료 · 이미지를 플로팅 창으로 띄웠습니다." : "이미지를 클립보드에 복사했습니다."); }
+                catch (ExternalException) { clipboardFailed = true; Notify("클립보드가 사용 중입니다. 캡처 이미지는 플로팅 창으로 보관했습니다."); }
+            }
+            else if (result.Outcome == CaptureOutcome.Save) { if (!SaveImage(result.Image)) return; }
+            else if (result.Outcome == CaptureOutcome.QuickSave) QuickSave(result.Image);
+            else if (result.Outcome == CaptureOutcome.Print) { if (!PrintImage(result.Image)) return; }
+            if (result.Outcome == CaptureOutcome.Pin || Store.Settings.AutoFloatCapture || clipboardFailed) PinImage(result.Image, result.ScreenBounds);
+            Store.Settings.LastSelection = result.ScreenBounds;
+            RecordImage(result.Image, result.ScreenBounds, result.Outcome != CaptureOutcome.QuickSave);
+            Store.SaveSettings();
         }
         private void RecordImage(Bitmap image) { RecordImage(image, Rectangle.Empty); }
         private void RecordImage(Bitmap image, Rectangle bounds, bool autoSave = true)
@@ -256,15 +319,31 @@ namespace ChachaCapture
             EditorForm form = new EditorForm(image, desktop, desktopBounds, imageBounds); form.SaveDirectory = Store.Settings.SaveFolder; form.QuickSaveDirectory = Store.Settings.QuickSaveFolder; editors.Add(form);
             if (UiTestMode) form.ShowInTaskbar = true;
             form.WhiteboardMode = whiteboard;
-            form.ImageCommitted += delegate(Bitmap rendered) { using (rendered) { Rectangle current = form.CurrentScreenBounds; RecordImage(rendered, current); Store.Settings.LastSelection = current; Store.SaveSettings(); } };
-            form.PinRequested += delegate(Bitmap rendered) { using (rendered) PinImage(rendered); };
-            form.FormClosed += delegate { editors.Remove(form); };
+            form.AutoFloatCapture = Store.Settings.AutoFloatCapture;
+            Bitmap floating = null; Rectangle floatingBounds = Rectangle.Empty;
+            form.ImageCommitted += delegate(Bitmap rendered)
+            {
+                using (rendered)
+                {
+                    Rectangle current = form.CurrentScreenBounds;
+                    if (Store.Settings.AutoFloatCapture && floating == null) { floating = (Bitmap)rendered.Clone(); floatingBounds = current; }
+                    RecordImage(rendered, current); Store.Settings.LastSelection = current; Store.SaveSettings();
+                }
+            };
+            form.PinRequested += delegate(Bitmap rendered) { if (floating != null) floating.Dispose(); floating = rendered; floatingBounds = form.CurrentScreenBounds; };
+            form.FormClosed += delegate
+            {
+                editors.Remove(form);
+                if (floating != null) { using (floating) { if (!Exiting) PinImage(floating, floatingBounds); } floating = null; }
+            };
             form.SelectTool(String.IsNullOrEmpty(tool) ? "Move" : tool); form.Show(); form.Activate();
         }
         public void PinImage(Bitmap image)
+        { PinImage(image, Rectangle.Empty); }
+        public void PinImage(Bitmap image, Rectangle bounds)
         {
             PinForm pin = AddPin(image, Guid.NewGuid().ToString("N"));
-            pin.Show(); SchedulePersist();
+            pin.ShowFloating(bounds); SchedulePersist();
         }
         private PinForm AddPin(Bitmap image, string id)
         {
@@ -354,7 +433,7 @@ namespace ChachaCapture
             PinForm pin = AddPin(payload.Image, Guid.NewGuid().ToString("N"));
             if (payload.Animation != null) pin.LoadAnimation(payload.Animation);
             pin.SourceText = payload.SourceText;
-            pin.Show(); SchedulePersist(); return pin;
+            pin.ShowFloating(); SchedulePersist(); return pin;
         }
         private void ReplaceFromClipboard(PinForm pin)
         {
@@ -626,6 +705,17 @@ namespace ChachaCapture
         [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+        public void ShutdownForUpdate()
+        {
+            foreach (EditorForm editor in editors.ToArray())
+            {
+                if (editor.IsDisposed) continue;
+                if (!editor.IsPinEditing && (!editor.IsInline || !Store.Settings.AutoFloatCapture))
+                    using (Bitmap image = editor.ExportImage()) PinImage(image, editor.CurrentScreenBounds);
+                editor.CommitChanges();
+            }
+            Shutdown();
+        }
         public void Shutdown()
         {
             if (Exiting) return;
@@ -634,6 +724,7 @@ namespace ChachaCapture
             try { PersistPins(); Store.SaveSettings(); }
             catch (Exception e) { Notify("설정을 저장하지 못했습니다: " + e.Message); }
             Exiting = true;
+            if (updateForm != null && !updateForm.IsDisposed) updateForm.Close();
             if (captureTimer != null) { captureTimer.Stop(); captureTimer.Dispose(); captureTimer = null; }
             if (overlay != null) overlay.Close();
             foreach (EditorForm e in editors.ToArray()) e.Close();

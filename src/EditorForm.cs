@@ -18,6 +18,7 @@ namespace ChachaCapture
         public event Action CloseRequested;
         public string SaveDirectory { get; set; }
         public string QuickSaveDirectory { get; set; }
+        public bool AutoFloatCapture { get; set; }
         public bool IsInline { get; private set; }
         public bool IsPinEditing { get; private set; }
         public bool HasChanges
@@ -294,7 +295,7 @@ namespace ChachaCapture
             copy.Click += delegate { CopyImage(); };
             Button save = MakeButton("저장  Ctrl+S", 135, 36);
             save.Click += delegate { SaveImage(); };
-            Button pin = MakeButton("고정  Ctrl+T", 135, 36);
+            Button pin = MakeButton("플로팅  Ctrl+T", 135, 36);
             pin.BackColor = _accent;
             pin.ForeColor = Color.FromArgb(15, 20, 34);
             pin.Click += delegate { PinImage(); };
@@ -462,7 +463,7 @@ namespace ChachaCapture
             Button print = MakeButton("인쇄", 47, 28); print.Click += delegate { PrintImage(); }; _tips.SetToolTip(print, "Ctrl+P");
             Button quick = MakeButton("빠른 저장", 72, 28); quick.Click += delegate { QuickSaveImage(); }; _tips.SetToolTip(quick, "Ctrl+Shift+S");
             Button save = MakeButton("저장", 50, 28); save.Click += delegate { SaveImage(); }; _tips.SetToolTip(save, "Ctrl+S");
-            Button pin = MakeButton(IsPinEditing ? "복사" : "고정", 50, 28); pin.Click += delegate { if (IsPinEditing) CopyImage(); else PinImage(); }; _tips.SetToolTip(pin, IsPinEditing ? "Ctrl+C · 이미지 복사" : "Ctrl+T · 화면에 고정하고 완료");
+            Button pin = MakeButton(IsPinEditing ? "복사" : "플로팅", 62, 28); pin.Click += delegate { if (IsPinEditing) CopyImage(); else PinImage(); }; _tips.SetToolTip(pin, IsPinEditing ? "Ctrl+C · 이미지 복사" : "Ctrl+T · 별도 플로팅 창으로 띄우고 완료");
             Button copy = MakeButton(IsPinEditing ? "완료 ✓" : "복사 ✓", 66, 28); copy.BackColor = _accent; copy.ForeColor = _background; copy.Click += delegate { if (IsPinEditing) CommitChanges(); else CopyImage(); }; _tips.SetToolTip(copy, IsPinEditing ? "Enter / Space / Esc · 편집 적용" : "Enter / Ctrl+C · 복사하고 완료");
             Button close = MakeButton("×", 30, 28); close.Click += delegate { if (IsPinEditing) CommitChanges(); else CloseInline(); }; _tips.SetToolTip(close, IsPinEditing ? "편집을 적용하고 도구막대 닫기" : "Esc · 취소");
             actions.Controls.AddRange(new Control[] { clear, print, quick, save, pin, copy, close });
@@ -738,7 +739,7 @@ namespace ChachaCapture
             if (IsInline)
             {
                 using (Pen outline = new Pen(_accent, 1F)) g.DrawRectangle(outline, imageBounds.X - 1, imageBounds.Y - 1, imageBounds.Width + 1, imageBounds.Height + 1);
-                string info = _state.Image.Width + " × " + _state.Image.Height + "   ·   Enter 복사   Ctrl+T 고정   Space 도구";
+                string info = _state.Image.Width + " × " + _state.Image.Height + "   ·   Enter " + (AutoFloatCapture ? "복사+플로팅" : "복사") + "   Ctrl+T 플로팅   Space 도구";
                 Size infoSize = TextRenderer.MeasureText(info, Font);
                 Rectangle label = new Rectangle((int)imageBounds.Left, Math.Max(0, (int)imageBounds.Top - 26), infoSize.Width + 12, 23);
                 using (SolidBrush fill = new SolidBrush(Color.FromArgb(230, _surface))) g.FillRectangle(fill, label);

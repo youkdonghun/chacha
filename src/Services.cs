@@ -73,6 +73,8 @@ namespace ChachaCapture
         public bool AutoDetectElements = true;
         public bool AbortOnFocusLoss = true;
         public bool AutoSave;
+        public bool AutoFloatCapture = true;
+        public bool PreferGpuCapture = true;
         public bool RunAtStartup;
         public int ClosedPinLimit = 1;
         public string ActiveGroup = "default";
@@ -278,6 +280,7 @@ namespace ChachaCapture
         public event Action<int> Pressed;
         public event Action<string[]> CommandReceived;
         private readonly List<int> registered = new List<int>();
+        public bool IsSuspended { get; private set; }
         public HotkeyWindow() { CreateHandle(new CreateParams { Caption = "ChachaCapture.Hotkeys", Parent = new IntPtr(-3) }); }
         public static bool ShowExisting()
         {
@@ -318,10 +321,12 @@ namespace ChachaCapture
         public string Register(AppSettings s)
         {
             Unregister();
+            if (IsSuspended) return String.Empty;
             List<string> errors = new List<string>();
             string[] values = { s.CaptureHotkey, s.PinHotkey, s.ToggleHotkey, s.ClickThroughHotkey, s.SwitchGroupHotkey };
             for (int i = 0; i < values.Length; i++)
             {
+                if (String.IsNullOrWhiteSpace(values[i])) continue;
                 uint modifiers, key;
                 if (!Parse(values[i], out modifiers, out key) || !RegisterHotKey(Handle, i + 1, modifiers | 0x4000, key)) errors.Add(values[i] ?? "(빈 단축키)");
                 else registered.Add(i + 1);
@@ -329,6 +334,8 @@ namespace ChachaCapture
             return String.Join(", ", errors.ToArray());
         }
         private void Unregister() { foreach (int id in registered) UnregisterHotKey(Handle, id); registered.Clear(); }
+        public void Suspend() { IsSuspended = true; Unregister(); }
+        public string Resume(AppSettings settings) { IsSuspended = false; return Register(settings); }
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x4A && CommandReceived != null)
@@ -342,7 +349,7 @@ namespace ChachaCapture
                     return;
                 }
             }
-            if (Pressed != null) { if (m.Msg == 0x312) Pressed(m.WParam.ToInt32()); else if (m.Msg == 0x8001) Pressed(0); } base.WndProc(ref m);
+            if (Pressed != null) { if (m.Msg == 0x312 && !IsSuspended) Pressed(m.WParam.ToInt32()); else if (m.Msg == 0x8001) Pressed(0); } base.WndProc(ref m);
         }
         public void Dispose() { Unregister(); DestroyHandle(); }
         [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint key);

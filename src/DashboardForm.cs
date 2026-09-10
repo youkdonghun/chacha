@@ -38,7 +38,8 @@ namespace ChachaCapture
             Label logo = Ui.Label("CHACHA", 17, Ui.Text); logo.Font = Ui.Font(17, FontStyle.Bold); logo.Location = new Point(0, 5); header.Controls.Add(logo);
             Label edition = Ui.Label("CAPTURE  /  PERSONAL", 8, Ui.Muted); edition.Location = new Point(145, 15); header.Controls.Add(edition);
             Button settings = Ui.Button("설정", false, delegate { app.ShowSettings(); }); settings.Width = 84; settings.Dock = DockStyle.Right; settings.Height = 34; header.Controls.Add(settings);
-            Button pins = Ui.Button("고정 창 보기", false, delegate { app.ShowAllPins(); }); pins.Width = 112; pins.Dock = DockStyle.Right; header.Controls.Add(pins);
+            Button updates = Ui.Button("업데이트", false, delegate { app.ShowUpdates(); }); updates.Width = 106; updates.Dock = DockStyle.Right; updates.Height = 34; header.Controls.Add(updates);
+            Button pins = Ui.Button("플로팅 창 보기", false, delegate { app.ShowAllPins(); }); pins.Width = 132; pins.Dock = DockStyle.Right; header.Controls.Add(pins);
             Button groups = Ui.Button("이미지 그룹", false, delegate { app.ShowGroups(); }); groups.Width = 112; groups.Dock = DockStyle.Right; header.Controls.Add(groups);
             root.Controls.Add(header, 0, 0);
 
@@ -53,7 +54,7 @@ namespace ChachaCapture
             root.Controls.Add(hero, 0, 1);
 
             FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 14, 0, 0), WrapContents = false };
-            Button paste = Ui.Button("클립보드 고정", false, delegate { app.PinClipboard(); }); paste.Width = 140; actions.Controls.Add(paste);
+            Button paste = Ui.Button("클립보드 플로팅", false, delegate { app.PinClipboard(); }); paste.Width = 148; actions.Controls.Add(paste);
             Button file = Ui.Button("이미지 열기", false, delegate { app.OpenImage(); }); file.Width = 116; actions.Controls.Add(file);
             Button full = Ui.Button("전체 화면", false, delegate { app.BeginCapture(0, true, false); }); full.Width = 112; actions.Controls.Add(full);
             Button delay = Ui.Button("3초 후 캡처", false, delegate { app.BeginCapture(3, false, false); }); delay.Width = 118; actions.Controls.Add(delay);
@@ -82,7 +83,8 @@ namespace ChachaCapture
             RefreshSettings();
             ResumeLayout(true);
         }
-        public void RefreshSettings() { shortcutLabel.Text = app.Store.Settings.CaptureHotkey + "  캡처    ·    " + app.Store.Settings.PinHotkey + "  고정    ·    " + app.Store.Settings.ToggleHotkey + "  숨기기 / 표시"; }
+        public void RefreshSettings() { shortcutLabel.Text = HotkeyLabel(app.Store.Settings.CaptureHotkey, "캡처") + "    ·    " + HotkeyLabel(app.Store.Settings.PinHotkey, "플로팅") + "    ·    " + HotkeyLabel(app.Store.Settings.ToggleHotkey, "숨기기 / 표시"); }
+        private static string HotkeyLabel(string key, string action) { return String.IsNullOrWhiteSpace(key) ? action + " (미지정)" : key + "  " + action; }
         public void SetStatus(string text) { status.Text = "●  " + text; }
         public void RefreshHistory()
         {
@@ -94,7 +96,7 @@ namespace ChachaCapture
             {
                 Panel empty = new Panel { Width = 920, Height = 170, BackColor = Ui.Surface };
                 Label first = Ui.Label("아직 캡처한 이미지가 없어요.", 15, Ui.Text); first.Location = new Point(26, 32); empty.Controls.Add(first);
-                Label help = Ui.Label("위의 새 영역 캡처를 누르거나 " + app.Store.Settings.CaptureHotkey + " 키로 시작하세요.\n이미지 파일을 이 창에 끌어다 놓아 편집할 수도 있습니다.", 10, Ui.Muted); help.Location = new Point(27, 78); empty.Controls.Add(help); history.Controls.Add(empty);
+                Label help = Ui.Label((String.IsNullOrWhiteSpace(app.Store.Settings.CaptureHotkey) ? "위의 새 영역 캡처를 눌러 시작하세요." : "위의 새 영역 캡처를 누르거나 " + app.Store.Settings.CaptureHotkey + " 키로 시작하세요.") + "\n이미지 파일을 이 창에 끌어다 놓아 편집할 수도 있습니다.", 10, Ui.Muted); help.Location = new Point(27, 78); empty.Controls.Add(help); history.Controls.Add(empty);
             }
             foreach (string path in paths)
             {
@@ -144,7 +146,7 @@ namespace ChachaCapture
                         g.DrawImage(image, new Rectangle((198 - w) / 2, (112 - h) / 2, w, h));
                     }
                 }
-                Button pin = Ui.Button("고정", false, delegate { if (PinRequested != null) PinRequested(path); }); pin.SetBounds(155, 136, 49, 30); pin.Font = Ui.Font(8, FontStyle.Bold); Controls.Add(pin);
+                Button pin = Ui.Button("플로팅", false, delegate { if (PinRequested != null) PinRequested(path); }); pin.SetBounds(146, 136, 58, 30); pin.Font = Ui.Font(8, FontStyle.Bold); Controls.Add(pin);
                 Click += delegate { if (OpenRequested != null) OpenRequested(path); };
                 AccessibleName = "캡처 " + dimensions + " 편집";
             }
@@ -163,8 +165,9 @@ namespace ChachaCapture
     {
         private readonly CaptureApplication app;
         private readonly TabControl tabs;
-        private readonly TextBox capture, pin, toggle, clickThrough, switchGroup, folder, quickFolder;
-        private readonly CheckBox cursor, detect, abort, restore, keep, tray, startup, autoSave, preferHtml, pasteFilePaths;
+        private readonly HotkeyCaptureBox capture, pin, toggle, clickThrough, switchGroup;
+        private readonly TextBox folder, quickFolder;
+        private readonly CheckBox autoFloatCapture, preferGpuCapture, cursor, detect, abort, restore, keep, tray, startup, autoSave, preferHtml, pasteFilePaths;
         private readonly NumericUpDown limit, closedLimit;
         private readonly Label validation;
 
@@ -197,19 +200,20 @@ namespace ChachaCapture
             TabPage pastePage = Page("고정 · 시작");
 
             capture = ShortcutField(shortcutsPage, "영역 캡처", ValidHotkey(s.CaptureHotkey, defaults.CaptureHotkey), 25);
-            pin = ShortcutField(shortcutsPage, "클립보드 고정", ValidHotkey(s.PinHotkey, defaults.PinHotkey), 77);
-            toggle = ShortcutField(shortcutsPage, "모든 고정 창 숨기기 / 표시", ValidHotkey(s.ToggleHotkey, defaults.ToggleHotkey), 129);
-            clickThrough = ShortcutField(shortcutsPage, "모든 고정 창 클릭 통과 전환", ValidHotkey(s.ClickThroughHotkey, defaults.ClickThroughHotkey), 181);
+            pin = ShortcutField(shortcutsPage, "클립보드 플로팅", ValidHotkey(s.PinHotkey, defaults.PinHotkey), 77);
+            toggle = ShortcutField(shortcutsPage, "모든 플로팅 창 숨기기 / 표시", ValidHotkey(s.ToggleHotkey, defaults.ToggleHotkey), 129);
+            clickThrough = ShortcutField(shortcutsPage, "모든 플로팅 창 클릭 통과 전환", ValidHotkey(s.ClickThroughHotkey, defaults.ClickThroughHotkey), 181);
             switchGroup = ShortcutField(shortcutsPage, "다음 이미지 그룹으로 전환", ValidHotkey(s.SwitchGroupHotkey, defaults.SwitchGroupHotkey), 233);
-            Note(shortcutsPage, "예: F1, F3, Shift+F3, Ctrl+Alt+A\n각 동작에 서로 다른 키를 지정하세요. 다른 앱과 충돌하면 저장 후 안내합니다.", 27, 295, 645, 52);
+            Note(shortcutsPage, "입력란을 선택하고 원하는 키를 누르세요. Ctrl · Alt · Shift 조합을 지원합니다.\n지우기: 해당 기능의 단축키 해제  /  빈 칸은 등록하지 않습니다.\nTab: 다음 항목  /  Esc: 선택 전 값으로 복원  /  Windows 키 조합은 미지원", 27, 290, 650, 80);
 
-            cursor = Check(capturePage, "처음부터 마우스 커서 포함", s.IncludeCursor, 28);
-            Note(capturePage, "캡처 중 ` 키로 마우스 커서를 표시하거나 숨길 수 있습니다.", 47, 59, 620, 35);
-            detect = Check(capturePage, "버튼과 입력란 등 화면 요소 자동 감지", s.AutoDetectElements, 114);
-            Note(capturePage, "Tab 키로 창 선택과 요소 선택을 전환하고, 휠로 선택 범위를 조절합니다.", 47, 146, 620, 37);
-            abort = Check(capturePage, "다른 앱으로 전환하면 캡처 취소", s.AbortOnFocusLoss, 203);
-            Note(capturePage, "캡처를 유지한 채 다른 앱을 이용하려면 이 옵션을 끄세요.", 47, 235, 620, 36);
-            Note(capturePage, "Enter 복사  ·  Ctrl+T 화면에 고정  ·  Alt 확대경  ·  Esc 취소", 27, 314, 650, 32);
+            autoFloatCapture = Check(capturePage, "캡처 완료 후 이미지를 플로팅 창으로 띄우기", s.AutoFloatCapture, 26);
+            cursor = Check(capturePage, "처음부터 마우스 커서 포함", s.IncludeCursor, 88);
+            Note(capturePage, "캡처 중 ` 키로 마우스 커서를 표시하거나 숨길 수 있습니다.", 47, 119, 620, 35);
+            detect = Check(capturePage, "버튼과 입력란 등 화면 요소 자동 감지", s.AutoDetectElements, 165);
+            Note(capturePage, "Tab 키로 창 선택과 요소 선택을 전환하고, 휠로 선택 범위를 조절합니다.", 47, 197, 620, 37);
+            abort = Check(capturePage, "다른 앱으로 전환하면 캡처 취소", s.AbortOnFocusLoss, 248);
+            Note(capturePage, "캡처를 유지한 채 다른 앱을 이용하려면 이 옵션을 끄세요.", 47, 280, 620, 36);
+            preferGpuCapture = Check(capturePage, "GPU 캡처 우선 사용 (실패하면 호환 방식으로 전환)", s.PreferGpuCapture, 331);
 
             keep = Check(storagePage, "캡처 기록 보관", s.KeepHistory, 26);
             limit = Number(storagePage, Math.Max(1, Math.Min(200, s.HistoryLimit)), 1, 200, 470, 23);
@@ -235,7 +239,7 @@ namespace ChachaCapture
 
             validation = Ui.Label("", 9, Color.FromArgb(255, 179, 150));
             validation.AutoSize = false; validation.SetBounds(27, 536, 705, 26); validation.AutoEllipsis = true; Controls.Add(validation);
-            Label version = Ui.Label("v1.1.0 · Windows x64", 9, Ui.Muted); version.Location = new Point(27, 577); Controls.Add(version);
+            Label version = Ui.Label("v1.2.0 · Windows x64", 9, Ui.Muted); version.Location = new Point(27, 577); Controls.Add(version);
             Button save = Ui.Button("설정 저장", true, Save); save.SetBounds(584, 567, 150, 38); Controls.Add(save);
             Button cancel = Ui.Button("취소", false, delegate { Close(); }); cancel.SetBounds(475, 567, 99, 38); Controls.Add(cancel);
             CancelButton = cancel; AcceptButton = save;
@@ -263,13 +267,16 @@ namespace ChachaCapture
             if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
         }
 
-        private TextBox ShortcutField(Control parent, string label, string value, int y)
+        private HotkeyCaptureBox ShortcutField(Control parent, string label, string value, int y)
         {
             Label caption = Ui.Label(label, 10, Ui.Text); caption.Location = new Point(27, y + 7); parent.Controls.Add(caption);
-            TextBox field = new TextBox { Text = value, Location = new Point(338, y), Width = 326,
+            HotkeyCaptureBox field = new HotkeyCaptureBox { Hotkey = value, Location = new Point(338, y), Width = 239,
                 BackColor = Ui.Surface, ForeColor = Ui.Text, BorderStyle = BorderStyle.FixedSingle,
                 Font = Ui.Font(11, FontStyle.Regular), AccessibleName = label, MaxLength = 80 };
             parent.Controls.Add(field);
+            Button clear = Ui.Button("지우기", false, delegate { field.Hotkey = String.Empty; });
+            clear.SetBounds(587, y - 1, 77, 31); clear.AccessibleName = label + " 단축키 지우기";
+            parent.Controls.Add(clear);
             return field;
         }
 
@@ -315,6 +322,7 @@ namespace ChachaCapture
 
         private static string ValidHotkey(string value, string fallback)
         {
+            if (String.IsNullOrWhiteSpace(value)) return String.Empty;
             uint modifiers, key;
             return HotkeyWindow.Parse(value, out modifiers, out key) ? value : fallback;
         }
@@ -354,15 +362,16 @@ namespace ChachaCapture
         private void Save(object sender, EventArgs e)
         {
             validation.Text = "";
-            TextBox[] fields = { capture, pin, toggle, clickThrough, switchGroup };
-            string[] keys = fields.Select(f => f.Text.Trim()).ToArray();
+            HotkeyCaptureBox[] fields = { capture, pin, toggle, clickThrough, switchGroup };
+            string[] keys = fields.Select(f => f.Hotkey.Trim()).ToArray();
             uint modifiers, key;
             System.Collections.Generic.HashSet<string> seen = new System.Collections.Generic.HashSet<string>();
             for (int i = 0; i < keys.Length; i++)
             {
+                if (String.IsNullOrWhiteSpace(keys[i])) continue;
                 if (!HotkeyWindow.Parse(keys[i], out modifiers, out key))
                 {
-                    ShowValidation("단축키 형식을 확인해 주세요: " + fields[i].AccessibleName, 0, fields[i]); return;
+                    ShowValidation("입력란을 선택하고 단축키를 눌러 주세요: " + fields[i].AccessibleName, 0, fields[i]); return;
                 }
                 if (!seen.Add(modifiers + ":" + key))
                 {
@@ -375,7 +384,7 @@ namespace ChachaCapture
             AppSettings next = new AppSettings
             {
                 CaptureHotkey = keys[0], PinHotkey = keys[1], ToggleHotkey = keys[2], ClickThroughHotkey = keys[3], SwitchGroupHotkey = keys[4],
-                IncludeCursor = cursor.Checked, AutoDetectElements = detect.Checked, AbortOnFocusLoss = abort.Checked,
+                AutoFloatCapture = autoFloatCapture.Checked, PreferGpuCapture = preferGpuCapture.Checked, IncludeCursor = cursor.Checked, AutoDetectElements = detect.Checked, AbortOnFocusLoss = abort.Checked,
                 RestorePins = restore.Checked, KeepHistory = keep.Checked, StartInTray = tray.Checked,
                 AutoSave = autoSave.Checked, PreferHtml = preferHtml.Checked, PasteFilePaths = pasteFilePaths.Checked,
                 HistoryLimit = (int)limit.Value, ClosedPinLimit = (int)closedLimit.Value,
@@ -386,8 +395,7 @@ namespace ChachaCapture
             bool startupApplied = false;
             try
             {
-                app.SetRunAtStartup(startup.Checked);
-                startupApplied = true;
+                if (startup.Checked != previous.RunAtStartup) { app.SetRunAtStartup(startup.Checked); startupApplied = true; }
                 app.Store.Settings = next;
                 app.ApplySettings();
                 DialogResult = DialogResult.OK; Close();

@@ -38,6 +38,9 @@ namespace ChachaCapture
         private bool magnifierVisible;
         private bool rgbColor;
         private MagnifierForm magnifier;
+        private FloatingToolbarForm floatingToolbar;
+        private DateTime toolbarRevealUntil = DateTime.MinValue;
+        private DateTime toolbarLastPointerAt = DateTime.MinValue;
         private AnimatedImageSource animation;
         private int currentFrame;
         private bool playing;
@@ -158,10 +161,11 @@ namespace ChachaCapture
             hoverTimer.Tick += delegate
             {
                 if (magnifierVisible) UpdateMagnifier();
+                UpdateFloatingToolbar();
                 if (!Visible || !Bounds.Contains(Cursor.Position))
                 {
                     mouseOver = false;
-                    if (!magnifierVisible) hoverTimer.Stop();
+                    if (!magnifierVisible && (floatingToolbar == null || !floatingToolbar.Visible)) hoverTimer.Stop();
                     Invalidate();
                 }
             };
@@ -252,8 +256,8 @@ namespace ChachaCapture
                 (screen.Width * 0.72 - FrameSize * 2) / image.Width,
                 (screen.Height * 0.72 - FrameSize * 2) / image.Height));
             SetScale(initialScale, null);
-            Location = new Point(screen.Left + (screen.Width - Width) / 2,
-                screen.Top + (screen.Height - Height) / 2);
+            Point cursor = Cursor.Position;
+            Location = ClampFloatingLocation(new Point(cursor.X + 18, cursor.Y + 18), screen);
         }
 
         private static ToolStripMenuItem Item(string text, string shortcut, EventHandler action)
@@ -411,9 +415,68 @@ namespace ChachaCapture
         {
             ClosedByUser = false;
             SetClickThrough(false);
+            EnsureReachable();
             if (!Visible) Show();
             BringToFront();
             Activate();
+            RevealFloatingToolbar();
+        }
+
+        /// <summary>Show a captured image as a separate, reachable window above other applications.</summary>
+        public void ShowFloating(Rectangle sourceBounds)
+        {
+            ShowFloating((Rectangle?)sourceBounds);
+        }
+
+        public void ShowFloating()
+        {
+            ShowFloating((Rectangle?)null);
+        }
+
+        public void ShowFloating(Rectangle? sourceBounds)
+        {
+            if (IsDisposed || disposing) throw new ObjectDisposedException("PinForm");
+            bool hasBounds = sourceBounds.HasValue && sourceBounds.Value.Width > 0 && sourceBounds.Value.Height > 0;
+            Point anchor = hasBounds ? sourceBounds.Value.Location : Cursor.Position;
+            Rectangle work = Screen.FromPoint(anchor).WorkingArea;
+            double fit = Math.Min((work.Width - 12.0) / image.Width, (work.Height - 12.0) / image.Height);
+            double requested = hasBounds ? Math.Min((double)sourceBounds.Value.Width / image.Width, (double)sourceBounds.Value.Height / image.Height) : 1;
+            ClosedByUser = false;
+            SetClickThrough(false);
+            TopMost = true;
+            Opacity = 1;
+            WindowState = FormWindowState.Normal;
+            if (Owner != null) Owner = null;
+            ScaleFactor = Math.Min(requested, Math.Min(1, fit));
+            Rectangle pixels = ImageRectangle;
+            Point position = hasBounds ? new Point(anchor.X - pixels.Left, anchor.Y - pixels.Top) : new Point(anchor.X + 18, anchor.Y + 18);
+            Location = ClampFloatingLocation(position, work);
+            if (!Visible) Show();
+            // Explicitly raise after Show so previously layered or owned pins cannot stay behind another topmost window.
+            SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0043);
+            BringToFront();
+            Activate();
+            RevealFloatingToolbar();
+            QueueStateChanged();
+        }
+
+        private Point ClampFloatingLocation(Point location, Rectangle work)
+        {
+            return new Point(Math.Max(work.Left, Math.Min(location.X, work.Right - Math.Min(Width, work.Width))),
+                Math.Max(work.Top, Math.Min(location.Y, work.Bottom - Math.Min(Height, work.Height))));
+        }
+
+        private void EnsureReachable()
+        {
+            foreach (Screen screen in Screen.AllScreens)
+            {
+                Rectangle visible = Rectangle.Intersect(Bounds, screen.WorkingArea);
+                if (visible.Width >= Math.Min(48, Width) && visible.Height >= Math.Min(48, Height)) return;
+            }
+            Rectangle work = Screen.FromPoint(Cursor.Position).WorkingArea;
+            if (Width > work.Width || Height > work.Height)
+                SetScale(Math.Min((work.Width - 8.0) / image.Width, (work.Height - 8.0) / image.Height), null);
+            Location = ClampFloatingLocation(new Point(Cursor.Position.X + 18, Cursor.Position.Y + 18), work);
         }
 
         public void ToggleVisible()
@@ -942,11 +1005,125 @@ namespace ChachaCapture
             magnifierVisible = visible;
             if (visible)
             {
+                if (floatingToolbar != null) floatingToolbar.Hide();
                 if (magnifier == null) magnifier = new MagnifierForm(this);
                 hoverTimer.Start();
                 UpdateMagnifier();
             }
             else if (magnifier != null) magnifier.Hide();
+        }
+
+        private void RevealFloatingToolbar()
+        {
+            toolbarRevealUntil = DateTime.UtcNow.AddSeconds(4);
+            hoverTimer.Start();
+            UpdateFloatingToolbar();
+        }
+
+        private void UpdateFloatingToolbar()
+        {
+            if (disposing || IsDisposed) return;
+            if (!Visible || clickThrough || magnifierVisible || WindowState == FormWindowState.Minimized)
+            {
+                if (floatingToolbar != null) floatingToolbar.Hide();
+                return;
+            }
+            Point pointer = Cursor.Position;
+            bool pointerOnImage = Bounds.Contains(pointer);
+            bool pointerOnToolbar = floatingToolbar != null && floatingToolbar.Visible && floatingToolbar.Bounds.Contains(pointer);
+            DateTime now = DateTime.UtcNow;
+            if (pointerOnImage || pointerOnToolbar) toolbarLastPointerAt = now;
+            bool show = now < toolbarRevealUntil || pointerOnImage || pointerOnToolbar || (now - toolbarLastPointerAt).TotalMilliseconds < 380;
+            if (!show) { if (floatingToolbar != null) floatingToolbar.Hide(); return; }
+            if (floatingToolbar == null) floatingToolbar = new FloatingToolbarForm(this);
+            Rectangle work = Screen.FromRectangle(Bounds).WorkingArea;
+            int x = Math.Max(work.Left, Math.Min(Left, work.Right - floatingToolbar.Width));
+            int y = Top - floatingToolbar.Height - 6;
+            if (y < work.Top) y = Bottom + 6;
+            if (y + floatingToolbar.Height > work.Bottom) y = Math.Max(work.Top, Top + 6);
+            floatingToolbar.Location = new Point(x, y);
+            floatingToolbar.RefreshTopmost();
+            if (!floatingToolbar.Visible) floatingToolbar.Show(this);
+        }
+
+        private void StartToolbarDrag()
+        {
+            ReleaseCapture();
+            SendWindowMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
+        }
+
+        private sealed class FloatingToolbarForm : Form
+        {
+            private readonly PinForm pin;
+            private readonly Button topmost;
+            private readonly ToolTip tips = new ToolTip();
+            private readonly Font toolbarFont = new Font("Malgun Gothic", 8.5F, FontStyle.Regular);
+
+            internal FloatingToolbarForm(PinForm source)
+            {
+                pin = source;
+                AutoScaleMode = AutoScaleMode.None;
+                FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual;
+                ShowInTaskbar = false;
+                TopMost = source.TopMost;
+                DoubleBuffered = true;
+                ClientSize = new Size(326, 36);
+                BackColor = Color.FromArgb(23, 31, 40);
+                ForeColor = Color.White;
+                Font = toolbarFont;
+                Label status = new Label { Text = "● 화면에 띄움", Bounds = new Rectangle(9, 1, 102, 34), TextAlign = ContentAlignment.MiddleLeft,
+                    ForeColor = Color.FromArgb(94, 234, 196), Cursor = Cursors.SizeAll };
+                status.MouseDown += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) pin.StartToolbarDrag(); };
+                tips.SetToolTip(status, "이미지나 이 표시를 드래그해서 이동하세요.\n마우스 휠 또는 테두리 드래그로 크기를 조절합니다.");
+                Controls.Add(status);
+                topmost = ButtonAt("항상 위", 111, 70, "다른 프로그램보다 위에 유지 / 해제", delegate
+                {
+                    pin.TopMost = !pin.TopMost;
+                    RefreshTopmost();
+                    pin.QueueStateChanged();
+                });
+                ButtonAt("편집", 184, 44, "이 이미지에 표시하기 · Space", delegate { pin.RequestEdit(); });
+                ButtonAt("저장", 231, 44, "이미지 파일로 저장 · Ctrl+S", delegate { pin.SaveImage(); });
+                ButtonAt("×", 278, 39, "닫기 · Esc / Ctrl+W (다시 표시할 수 있습니다)", delegate { pin.HideByUser(); });
+                RefreshTopmost();
+            }
+
+            private Button ButtonAt(string text, int x, int width, string hint, EventHandler action)
+            {
+                Button button = new Button { Text = text, Bounds = new Rectangle(x, 5, width, 26), FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(36, 47, 59), ForeColor = Color.White, Cursor = Cursors.Hand, TabStop = false,
+                    Font = toolbarFont, UseVisualStyleBackColor = false };
+                button.FlatAppearance.BorderSize = 0;
+                button.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 76, 86);
+                button.Click += action;
+                tips.SetToolTip(button, hint);
+                Controls.Add(button);
+                return button;
+            }
+
+            internal void RefreshTopmost()
+            {
+                if (TopMost != pin.TopMost) TopMost = pin.TopMost;
+                topmost.Text = pin.TopMost ? "항상 위 ✓" : "항상 위";
+                topmost.BackColor = pin.TopMost ? Color.FromArgb(48, 101, 89) : Color.FromArgb(36, 47, 59);
+            }
+
+            protected override bool ShowWithoutActivation { get { return true; } }
+            protected override CreateParams CreateParams
+            {
+                get { CreateParams p = base.CreateParams; p.ExStyle |= 0x08000080; return p; }
+            }
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e);
+                using (Pen border = new Pen(Color.FromArgb(62, 121, 108))) e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+            }
+            protected override void Dispose(bool disposingManaged)
+            {
+                if (disposingManaged) { tips.Dispose(); toolbarFont.Dispose(); }
+                base.Dispose(disposingManaged);
+            }
         }
 
         private void UpdateMagnifier()
@@ -1043,12 +1220,14 @@ namespace ChachaCapture
                 if (handler != null && (delta.X != 0 || delta.Y != 0)) handler(delta);
             }
             if (!changingSize) QueueStateChanged();
+            if (floatingToolbar != null && floatingToolbar.Visible) UpdateFloatingToolbar();
         }
 
         protected override void OnVisibleChanged(EventArgs e)
         {
             base.OnVisibleChanged(e);
             if (!Visible) SetMagnifier(false);
+            if (!Visible && floatingToolbar != null) floatingToolbar.Hide();
             UpdateAnimationTimer();
             QueueStateChanged();
         }
@@ -1089,6 +1268,7 @@ namespace ChachaCapture
                 if (animationTimer != null) animationTimer.Dispose();
                 if (animation != null) { animation.Dispose(); animation = null; }
                 if (magnifier != null) { magnifier.Dispose(); magnifier = null; }
+                if (floatingToolbar != null) { floatingToolbar.Dispose(); floatingToolbar = null; }
                 if (menu != null) menu.Dispose();
                 if (image != null) { image.Dispose(); image = null; }
             }
@@ -1105,6 +1285,9 @@ namespace ChachaCapture
         private static extern IntPtr SetWindowLong64(IntPtr window, int index, IntPtr value);
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetLayeredWindowAttributes(IntPtr window, uint colorKey, byte alpha, uint flags);
+        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+        [DllImport("user32.dll")] private static extern bool ReleaseCapture();
+        [DllImport("user32.dll", EntryPoint = "SendMessage")] private static extern IntPtr SendWindowMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
         private delegate bool EnumWindowCallback(IntPtr window, IntPtr parameter);
         [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowCallback callback, IntPtr parameter);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
