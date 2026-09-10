@@ -22,7 +22,6 @@ namespace ChachaCapture
             Icon = Ui.CreateIcon();
             BackColor = Ui.Background; ForeColor = Ui.Text;
             Font = Ui.Font(10, FontStyle.Regular);
-            KeyPreview = true;
             AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(1060, 750); MinimumSize = new Size(900, 650);
@@ -69,7 +68,7 @@ namespace ChachaCapture
             library.Controls.Add(history, 0, 1); root.Controls.Add(library, 0, 3);
             Panel footer = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(0, 7, 0, 0) };
             status = Ui.Label("●  준비됨   ·   창을 닫아도 트레이에서 계속 실행됩니다.", 9, Ui.Muted); status.AutoSize = false; status.Dock = DockStyle.Fill; status.TextAlign = ContentAlignment.MiddleLeft; status.AutoEllipsis = true; footer.Controls.Add(status);
-            Button exit = Ui.Button("종료  Ctrl+Q", false, delegate { app.Shutdown(); }); exit.Font = Ui.Font(8, FontStyle.Regular); exit.Width = 116; exit.Dock = DockStyle.Right; footer.Controls.Add(exit);
+            Button exit = Ui.Button("종료", false, delegate { app.Shutdown(); }); exit.Font = Ui.Font(8, FontStyle.Regular); exit.Width = 84; exit.Dock = DockStyle.Right; footer.Controls.Add(exit);
             root.Controls.Add(footer, 0, 4);
             AllowDrop = true;
             DragEnter += delegate(object sender, DragEventArgs e) { if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy; };
@@ -80,11 +79,6 @@ namespace ChachaCapture
             ResumeLayout(true);
         }
         public void RefreshSettings() { shortcutLabel.Text = app.Store.Settings.CaptureHotkey + "  캡처    ·    " + app.Store.Settings.PinHotkey + "  고정    ·    " + app.Store.Settings.ToggleHotkey + "  숨기기 / 표시"; }
-        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-        {
-            if (keyData == (Keys.Control | Keys.Q)) { app.Shutdown(); return true; }
-            return base.ProcessCmdKey(ref msg, keyData);
-        }
         public void SetStatus(string text) { status.Text = "●  " + text; }
         public void RefreshHistory()
         {

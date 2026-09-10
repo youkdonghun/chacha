@@ -9,13 +9,16 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Build and test portable executable
         shell: powershell
         run: ./build.ps1 -Test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.1
+        # Releases also carry the portable binaries. Account-wide artifact quotas must not fail a passing build.
+        continue-on-error: true
         with:
           name: ChachaCapture-win-x64
+          retention-days: 7
           path: |
             dist/ChachaCapture.exe
             dist/ChachaCapture-1.0.0-win-x64.zip
