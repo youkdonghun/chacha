@@ -22,6 +22,7 @@ namespace ChachaCapture
         public string FloatingHotkey { get; set; }
         public bool IsInline { get; private set; }
         public bool IsPinEditing { get; private set; }
+        public bool CopiedAndClosed { get; private set; }
         public bool HasChanges
         {
             get
@@ -280,7 +281,7 @@ namespace ChachaCapture
             _sizeLabel = new Label { AutoSize = true, Location = new Point(19, 39), ForeColor = _muted, Font = OwnFont("Segoe UI", 8.5F, FontStyle.Regular) };
             FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 445, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = _surface, Padding = new Padding(0, 6, 0, 0) };
             Button copy = MakeButton("복사  Ctrl+C", 135, 36);
-            copy.Click += delegate { CopyImage(); };
+            copy.Click += delegate { CopyAndClose(); };
             Button save = MakeButton("저장  Ctrl+S", 135, 36);
             save.Click += delegate { SaveImage(); };
             Button pin = MakeButton("플로팅  Ctrl+T", 135, 36);
@@ -452,8 +453,8 @@ namespace ChachaCapture
             Button print = MakeButton("인쇄", 47, 28); print.Click += delegate { PrintImage(); }; _tips.SetToolTip(print, "Ctrl+P");
             Button quick = MakeButton("빠른 저장", 72, 28); quick.Click += delegate { QuickSaveImage(); }; _tips.SetToolTip(quick, "Ctrl+Shift+S");
             Button save = MakeButton("저장", 50, 28); save.Click += delegate { SaveImage(); }; _tips.SetToolTip(save, "Ctrl+S");
-            Button pin = MakeButton(IsPinEditing ? "복사" : "플로팅", 62, 28); pin.Click += delegate { if (IsPinEditing) CopyImage(); else PinImage(); }; _tips.SetToolTip(pin, IsPinEditing ? "Ctrl+C · 이미지 복사" : "Ctrl+T · 별도 플로팅 창으로 띄우고 완료");
-            Button copy = MakeButton(IsPinEditing ? "완료 ✓" : "복사 ✓", 66, 28); copy.BackColor = _accent; copy.ForeColor = _background; copy.Click += delegate { if (IsPinEditing) CommitChanges(); else CopyImage(); }; _tips.SetToolTip(copy, IsPinEditing ? "Enter / Space / Esc · 편집 적용" : "Enter / Ctrl+C · 복사하고 완료");
+            Button pin = MakeButton(IsPinEditing ? "복사" : "플로팅", 62, 28); pin.Click += delegate { if (IsPinEditing) CopyAndClose(); else PinImage(); }; _tips.SetToolTip(pin, IsPinEditing ? "Ctrl+C · 복사하고 플로팅 닫기" : "Ctrl+T · 별도 플로팅 창으로 띄우고 완료");
+            Button copy = MakeButton(IsPinEditing ? "완료 ✓" : "복사 ✓", 66, 28); copy.BackColor = _accent; copy.ForeColor = _background; copy.Click += delegate { if (IsPinEditing) CommitChanges(); else CopyAndClose(); }; _tips.SetToolTip(copy, IsPinEditing ? "Enter / Space / Esc · 편집 적용" : "Ctrl+C · 복사하고 닫기");
             Button close = MakeButton("×", 30, 28); close.Click += delegate { if (IsPinEditing) CommitChanges(); else CloseInline(); }; _tips.SetToolTip(close, IsPinEditing ? "편집을 적용하고 도구막대 닫기" : "Esc · 취소");
             actions.Controls.AddRange(new Control[] { clear, print, quick, save, pin, copy, close });
             if (_inlineScale != 1F) foreach (Control control in actions.Controls) control.Scale(new SizeF(_inlineScale, _inlineScale));
@@ -729,7 +730,7 @@ namespace ChachaCapture
             if (IsInline)
             {
                 using (Pen outline = new Pen(_accent, 1F)) g.DrawRectangle(outline, imageBounds.X - 1, imageBounds.Y - 1, imageBounds.Width + 1, imageBounds.Height + 1);
-                string info = _state.Image.Width + " × " + _state.Image.Height + "   ·   Enter " + (AutoFloatCapture ? "복사+플로팅" : "복사") + "   Ctrl+T 플로팅   Space 도구";
+                string info = _state.Image.Width + " × " + _state.Image.Height + "   ·   Ctrl+C 복사 후 닫기   Enter " + (AutoFloatCapture ? "복사+플로팅" : "복사") + "   Ctrl+T 플로팅";
                 Size infoSize = TextRenderer.MeasureText(info, Font);
                 Rectangle label = new Rectangle((int)imageBounds.Left, Math.Max(0, (int)imageBounds.Top - 26), infoSize.Width + 12, 23);
                 using (SolidBrush fill = new SolidBrush(Color.FromArgb(230, _surface))) g.FillRectangle(fill, label);
@@ -1551,15 +1552,24 @@ namespace ChachaCapture
         }
 
         private void CopyImage()
+        { CopyImageCore(false); }
+
+        private void CopyAndClose()
+        { CopyImageCore(true); }
+
+        private void CopyImageCore(bool closeAfterCopy)
         {
             FinishPolyline();
             CancelGesture();
             try
             {
                 ClipboardImages.Copy(_rendered);
+                // Set this only after the clipboard accepts the full-resolution image.
+                // The controller must not recreate a floating window during FormClosed.
+                CopiedAndClosed = closeAfterCopy || IsPinEditing;
                 NotifyCommitted();
                 SetStatus("클립보드에 복사했습니다 · " + _rendered.Width + " × " + _rendered.Height + " px");
-                if (HasFloatingBars) CloseInline();
+                if (CopiedAndClosed || HasFloatingBars) CloseInline();
             }
             catch (Exception ex) { ShowActionError("이미지 복사", ex); }
         }
@@ -1730,7 +1740,7 @@ namespace ChachaCapture
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (keyData == (Keys.Control | Keys.C)) { CopyImage(); return true; }
+            if (keyData == (Keys.Control | Keys.C)) { CopyAndClose(); return true; }
             if (keyData == (Keys.Control | Keys.S)) { SaveImage(); return true; }
             if (keyData == (Keys.Control | Keys.Shift | Keys.S)) { QuickSaveImage(); return true; }
             if (keyData == (Keys.Control | Keys.T) || IsFloatingShortcut(keyData)) { PinImage(); return true; }

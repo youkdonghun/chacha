@@ -233,7 +233,7 @@ namespace ChachaCapture
             shortcutsPage.Controls.Add(shortcutHelp);
             Note(shortcutHelp, "입력란 클릭 → 원하는 키 누르기 → 설정 저장 · 필요 없는 키는 해제\nTab: 다음 항목 · Esc: 입력 취소 (플로팅 닫기 항목에서는 Esc 지정)", 14, 10, 675, 47);
 
-            autoFloatCapture = Check(capturePage, "캡처 완료 후 이미지를 플로팅 창으로 띄우기", s.AutoFloatCapture, 26);
+            autoFloatCapture = Check(capturePage, "Enter·저장 후 자동 플로팅 (Ctrl+C는 닫기)", s.AutoFloatCapture, 26);
             cursor = Check(capturePage, "처음부터 마우스 커서 포함", s.IncludeCursor, 88);
             Note(capturePage, "캡처 중 ` 키로 마우스 커서를 표시하거나 숨길 수 있습니다.", 47, 119, 620, 35);
             detect = Check(capturePage, "창과 화면 요소의 영역 자동 감지", s.AutoDetectElements, 165);

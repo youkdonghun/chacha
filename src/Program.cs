@@ -324,15 +324,16 @@ namespace ChachaCapture
             }
             if (output != null) { CompleteOutput(result.Image, result.ScreenBounds, output); return; }
             bool clipboardFailed = false;
-            if (result.Outcome == CaptureOutcome.Copy)
+            bool closeAfterCopy = result.Outcome == CaptureOutcome.CopyAndClose;
+            if (result.Outcome == CaptureOutcome.Copy || closeAfterCopy)
             {
-                try { ClipboardImages.Copy(result.Image); Notify(Store.Settings.AutoFloatCapture ? "복사 완료 · 이미지를 플로팅 창으로 띄웠습니다." : "이미지를 클립보드에 복사했습니다."); }
+                try { ClipboardImages.Copy(result.Image); Notify(Store.Settings.AutoFloatCapture && !closeAfterCopy ? "복사 완료 · 이미지를 플로팅 창으로 띄웠습니다." : "이미지를 클립보드에 복사했습니다."); }
                 catch (ExternalException) { clipboardFailed = true; Notify("클립보드가 사용 중입니다. 캡처 이미지는 플로팅 창으로 보관했습니다."); }
             }
             else if (result.Outcome == CaptureOutcome.Save) { if (!SaveImage(result.Image)) return; }
             else if (result.Outcome == CaptureOutcome.QuickSave) QuickSave(result.Image);
             else if (result.Outcome == CaptureOutcome.Print) { if (!PrintImage(result.Image)) return; }
-            if (result.Outcome == CaptureOutcome.Pin || Store.Settings.AutoFloatCapture || clipboardFailed) PinImage(result.Image, result.ScreenBounds);
+            if ((Store.Settings.AutoFloatCapture && !closeAfterCopy) || clipboardFailed) PinImage(result.Image, result.ScreenBounds);
             Store.Settings.LastSelection = result.ScreenBounds;
             RecordImage(result.Image, result.ScreenBounds, result.Outcome != CaptureOutcome.QuickSave);
             Store.SaveSettings();
@@ -367,7 +368,7 @@ namespace ChachaCapture
                 using (rendered)
                 {
                     Rectangle current = form.CurrentScreenBounds;
-                    if (Store.Settings.AutoFloatCapture && floating == null) { floating = (Bitmap)rendered.Clone(); floatingBounds = current; }
+                    if (Store.Settings.AutoFloatCapture && !form.CopiedAndClosed && floating == null) { floating = (Bitmap)rendered.Clone(); floatingBounds = current; }
                     RecordImage(rendered, current); Store.Settings.LastSelection = current; Store.SaveSettings();
                 }
             };
@@ -379,7 +380,7 @@ namespace ChachaCapture
             form.FormClosed += delegate
             {
                 editors.Remove(form);
-                if (floating != null) { using (floating) { if (!Exiting) PinImage(floating, floatingBounds); } floating = null; }
+                if (floating != null) { using (floating) { if (!Exiting && !form.CopiedAndClosed) PinImage(floating, floatingBounds); } floating = null; }
             };
             form.SelectTool(String.IsNullOrEmpty(tool) ? "Move" : tool); form.Show(); form.Activate();
         }
@@ -414,6 +415,7 @@ namespace ChachaCapture
                     {
                         if (!pin.IsDisposed && editor.HasChanges) using (Bitmap edited = editor.ExportImage()) { pin.ReplaceImage(edited); pin.SourceText = sourceText; pin.ScaleFactor = scale; pin.Location = position; }
                         editors.Remove(editor); editingPins.Remove(pin); pinEditors.Remove(pin);
+                        if (!pin.IsDisposed && editor.CopiedAndClosed) pin.HideByUser();
                         if (!pin.IsDisposed && !Exiting && pin.GroupId == Store.Settings.ActiveGroup && !pin.ClosedByUser) pin.Show(); SchedulePersist();
                     };
                     editingPins.Add(pin); pinEditors.Add(pin, editor); pin.Hide();

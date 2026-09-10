@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace ChachaCapture
 {
-    public enum CaptureOutcome { Edit, Copy, Pin, Save, Color, QuickSave, Print }
+    public enum CaptureOutcome { Edit, Copy, Pin, Save, Color, QuickSave, Print, CopyAndClose }
 
     public sealed class CaptureHistoryItem : IDisposable
     {
@@ -623,6 +623,7 @@ namespace ChachaCapture
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (_completing) return true;
+            if (keyData == (Keys.Control | Keys.C)) { Finish(CaptureOutcome.CopyAndClose); return true; }
             if (IsFloatingShortcut(keyData)) { TryPinSelection(); return true; }
             Keys key = keyData & Keys.KeyCode;
             Keys modifiers = keyData & Keys.Modifiers;
@@ -681,7 +682,6 @@ namespace ChachaCapture
                 if (key == Keys.S && modifiers == (Keys.Control | Keys.Shift)) { Finish(CaptureOutcome.QuickSave); return true; }
                 if (modifiers == Keys.Control)
                 {
-                    if (key == Keys.C) { Finish(CaptureOutcome.Copy); return true; }
                     if (key == Keys.T) { Finish(CaptureOutcome.Pin); return true; }
                     if (key == Keys.P) { Finish(CaptureOutcome.Print); return true; }
                     if (key == Keys.S) { Finish(CaptureOutcome.Save); return true; }
@@ -791,7 +791,7 @@ namespace ChachaCapture
             {
                 case 8: Finish((ModifierKeys & Keys.Shift) != 0 ? CaptureOutcome.QuickSave : CaptureOutcome.Save); break;
                 case 9: Finish(CaptureOutcome.Pin); break;
-                case 10: Finish(CaptureOutcome.Copy); break;
+                case 10: Finish(CaptureOutcome.CopyAndClose); break;
                 default: Close(); break;
             }
         }
@@ -906,7 +906,7 @@ namespace ChachaCapture
             g.SmoothingMode = smoothing;
             string[] descriptions = { "사각형", "타원", "화살표", "연결선", "펜 · B", "텍스트 · T", "모자이크", "흐리게",
                 "저장 Ctrl+S · Shift 클릭 빠른 저장", "다른 창 위에 띄워 두고 드래그·크기 조절 · " + FloatingShortcutLabel,
-                AutoFloatCapture ? "복사+플로팅 Enter · Ctrl+C · 더블클릭" : "복사 Enter · Ctrl+C · 더블클릭", "취소 Esc" };
+                "복사하고 닫기 Ctrl+C", "취소 Esc" };
             int hover = HitToolbar(_mousePoint);
             for (int i = 0; i < descriptions.Length; i++)
             {
@@ -927,7 +927,7 @@ namespace ChachaCapture
                         Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             }
             string hintText = hover >= 0 ? descriptions[hover] :
-                (AutoFloatCapture ? "Enter 복사+플로팅" : "Enter 복사") + " · " + FloatingShortcutLabel + " 플로팅 · 방향키 이동 · Space 도구 모음";
+                "Ctrl+C 복사 후 닫기 · " + (AutoFloatCapture ? "Enter 복사+플로팅" : "Enter 복사") + " · " + FloatingShortcutLabel + " 플로팅";
             if (_historyIndex >= 0 && hover < 0) hintText = "기록 " + (_historyIndex + 1) + "/" + _history.Count + "  ·  , 이전 / . 다음  ·  Enter 복사";
             Rectangle hint = new Rectangle(bar.X + 6, bar.Y + 47, bar.Width - 12, 18);
             TextRenderer.DrawText(g, hintText, _smallFont, hint, Color.FromArgb(175, 188, 201),

@@ -22,6 +22,123 @@ internal static class DesktopIntegration
     private static void Complete(CaptureApplication app, Bitmap image, CaptureOutcome outcome, Rectangle bounds)
     { using (CaptureResult result = new CaptureResult { Image = (Bitmap)image.Clone(), Outcome = outcome, ScreenBounds = bounds }) Call(app, "CompleteCapture", result, null); }
     private static void ClosePins(CaptureApplication app) { foreach (PinForm pin in app.AllPins) pin.Close(); }
+    private static void Key(Form form, Keys keys)
+    { Check((bool)Call(form, "ProcessCmdKey", Message.Create(IntPtr.Zero, 0x100, IntPtr.Zero, IntPtr.Zero), keys), "Shortcut was not handled: " + keys); }
+    private static bool SamePixels(Bitmap expected, Bitmap actual)
+    {
+        if (actual == null || expected.Size != actual.Size) return false;
+        for (int y = 0; y < expected.Height; y++)
+            for (int x = 0; x < expected.Width; x++)
+                if (expected.GetPixel(x, y).ToArgb() != actual.GetPixel(x, y).ToArgb()) return false;
+        return true;
+    }
+    private static void CheckClipboard(Bitmap expected, string message)
+    { using (Image image = Clipboard.GetImage()) using (Bitmap actual = image == null ? null : new Bitmap(image)) Check(SamePixels(expected, actual), message); }
+    private static IEnumerable<Control> Descendants(Control control)
+    {
+        foreach (Control child in control.Controls)
+        {
+            yield return child;
+            foreach (Control nested in Descendants(child)) yield return nested;
+        }
+    }
+    private static void CopyCompletionWorkflow(CaptureApplication app, string root)
+    {
+        app.Store.Settings.AutoFloatCapture = true;
+        app.Store.Settings.AutoSave = false;
+        app.Store.SaveSettings();
+        Check(new Storage(root).Settings.AutoFloatCapture, "The Ctrl+C regression did not retain an existing enabled automatic-floating setting.");
+        Rectangle desktopBounds = new Rectangle(0, 0, 1920, 1080);
+        Rectangle area = new Rectangle(420, 300, 160, 100);
+        using (Bitmap image = new Bitmap(area.Width, area.Height))
+        using (Bitmap desktop = new Bitmap(desktopBounds.Width, desktopBounds.Height))
+        {
+            for (int y = 0; y < image.Height; y++)
+                for (int x = 0; x < image.Width; x++) image.SetPixel(x, y, Color.FromArgb((x * 3) % 256, (y * 7) % 256, (x + y) % 256));
+            using (Graphics g = Graphics.FromImage(desktop)) { g.Clear(Color.DarkSlateBlue); g.DrawImageUnscaled(image, area.Location); }
+            foreach (Keys command in new[] { Keys.Control | Keys.C, Keys.Enter, Keys.Control | Keys.T })
+            {
+                app.PinImage(image, new Rectangle(640, 300, image.Width, image.Height));
+                PinForm unrelated = app.AllPins.Single();
+                CaptureOutcome expectedOutcome = command == (Keys.Control | Keys.C) ? CaptureOutcome.CopyAndClose : command == Keys.Enter ? CaptureOutcome.Copy : CaptureOutcome.Pin;
+                int completed = 0;
+                if (expectedOutcome == CaptureOutcome.Pin) Clipboard.SetText("Chacha explicit floating retains clipboard");
+                using (CaptureOverlay selection = new CaptureOverlay(desktop, desktopBounds, Rectangle.Empty, null, false, false))
+                {
+                    selection.AutoFloatCapture = true;
+                    selection.FloatingHotkey = "";
+                    selection.SetSelection(area);
+                    selection.Completed += delegate(CaptureResult result)
+                    {
+                        completed++;
+                        using (result)
+                        {
+                            Check(result.Outcome == expectedOutcome, command + " selected the wrong capture completion action.");
+                            Check(result.ScreenBounds == area && SamePixels(image, result.Image), command + " changed the selected region or pixels.");
+                            Call(app, "CompleteCapture", result, null);
+                        }
+                    };
+                    Key(selection, command);
+                    Pump(40);
+                    Check(completed == 1 && !selection.Visible, command + " did not finish the selection once.");
+                }
+                Check(!unrelated.IsDisposed && unrelated.Visible && !unrelated.ClosedByUser, command + " closed an unrelated floating image.");
+                Check(app.AllPins.Length == (expectedOutcome == CaptureOutcome.CopyAndClose ? 1 : 2), command + " ignored explicit close or optional automatic floating.");
+                if (expectedOutcome == CaptureOutcome.Pin)
+                    Check(Clipboard.GetText() == "Chacha explicit floating retains clipboard", "Explicit floating changed the clipboard.");
+                else CheckClipboard(image, command + " did not copy the exact selected image.");
+                ClosePins(app);
+            }
+            foreach (bool copyButton in new[] { false, true })
+            {
+                app.PinImage(image, new Rectangle(640, 300, image.Width, image.Height));
+                PinForm unrelated = app.AllPins.Single();
+                Call(app, "EditInline", image, desktop, desktopBounds, area, "Pen", false);
+                EditorForm editor = ((List<EditorForm>)Field(app, "editors")).Last();
+                Check(!editor.CopiedAndClosed, "A newly opened editor was already marked as copied and closed.");
+                if (copyButton) Descendants(editor).OfType<Button>().Single(button => button.Visible && button.Text.StartsWith("복사", StringComparison.Ordinal)).PerformClick();
+                else Key(editor, Keys.Control | Keys.C);
+                Pump(40);
+                string action = copyButton ? "Inline copy button" : "Inline Ctrl+C";
+                Check(editor.IsDisposed && editor.CopiedAndClosed && !((List<EditorForm>)Field(app, "editors")).Contains(editor), action + " left the editor open or lost its successful-copy state.");
+                Check(app.AllPins.Length == 1 && app.AllPins[0] == unrelated && unrelated.Visible, action + " created a floating image or affected an unrelated one.");
+                CheckClipboard(image, action + " did not copy the exact edited image.");
+                ClosePins(app);
+            }
+            app.PinImage(image, area);
+            PinForm source = app.AllPins.Single();
+            app.PinImage(image, new Rectangle(640, 300, image.Width, image.Height));
+            PinForm peer = app.AllPins.Single(pin => pin != source);
+            Key(source, Keys.Control | Keys.C);
+            Pump(40);
+            Check(!source.IsDisposed && !source.Visible && source.ClosedByUser, "Floating Ctrl+C did not close the copied image recoverably.");
+            Check(peer.Visible && !peer.ClosedByUser && app.AllPins.Length == 2, "Floating Ctrl+C affected another floating image.");
+            CheckClipboard(image, "Floating Ctrl+C changed the clipboard pixels.");
+            app.PinClipboard();
+            Check(source.Visible && !source.ClosedByUser && app.AllPins.Length == 2, "The floating shortcut did not restore the copied-and-closed image.");
+            Key(source, Keys.Space);
+            EditorForm pinEditor = ((List<EditorForm>)Field(app, "editors")).Last();
+            Check(pinEditor.IsPinEditing && !source.Visible, "Floating edit did not hide its original image.");
+            Rectangle crop = new Rectangle(17, 13, 80, 50);
+            Call(pinEditor, "CropTo", crop);
+            Check(pinEditor.HasChanges, "The pin-edit copy regression did not create a real image edit.");
+            using (Bitmap edited = image.Clone(crop, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                Key(pinEditor, Keys.Control | Keys.C);
+                Pump(40);
+                Check(pinEditor.IsDisposed && pinEditor.CopiedAndClosed, "Pin editor Ctrl+C did not complete and close its editor.");
+                Check(!source.IsDisposed && !source.Visible && source.ClosedByUser, "Pin editor Ctrl+C reopened or destroyed its source image.");
+                Check(peer.Visible && app.AllPins.Length == 2, "Pin editor Ctrl+C affected another image or created a replacement floating window.");
+                CheckClipboard(edited, "Pin editor Ctrl+C did not copy the final cropped image.");
+                using (Bitmap retained = source.ExportImage()) Check(SamePixels(edited, retained), "The recoverable source pin lost the final edited pixels.");
+                app.PinClipboard();
+                Check(source.Visible && !source.ClosedByUser && app.AllPins.Length == 2, "The copied pin edit could not be restored without duplicating its image.");
+                using (Bitmap restored = source.ExportImage()) Check(SamePixels(edited, restored), "Restoring a copied pin edit reverted to the original pixels.");
+            }
+            ClosePins(app);
+        }
+        notes.Add("Ctrl+C regression: persisted automatic floating enabled; overlay, inline editor, copy button, floating image, edited floating image, and recovery passed.");
+    }
     [STAThread] private static int Main(string[] args)
     {
         string root = Path.Combine(Path.GetTempPath(), "ChachaCapture-desktopqa-" + Guid.NewGuid().ToString("N"));
@@ -55,7 +172,7 @@ internal static class DesktopIntegration
                 ClosePins(app); app.Store.Settings.AutoFloatCapture = true;
                 Complete(app, image, CaptureOutcome.Pin, area); Check(app.AllPins.Length == 1, "Explicit floating created duplicate windows.");
                 ClosePins(app);
-                foreach (string action in new[] { "CopyImage", "PinImage", "QuickSaveImage" })
+                foreach (string action in new[] { "Enter", "PinImage", "QuickSaveImage" })
                 {
                     int savedBefore = Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0;
                     int historyBefore = app.Store.History().Length;
@@ -68,6 +185,7 @@ internal static class DesktopIntegration
                         editor.Activate(); Pump(80);
                         Call(Field(app, "hotkeys"), "WndProc", Message.Create(IntPtr.Zero, 0x312, new IntPtr(2), IntPtr.Zero));
                     }
+                    else if (action == "Enter") Key(editor, Keys.Enter);
                     else Call(editor, action);
                     Pump(40);
                     Check(editor.IsDisposed && !shownBeforeClose, action + " showed floating before the editor closed.");
@@ -81,6 +199,7 @@ internal static class DesktopIntegration
                     ClosePins(app);
                 }
             }
+            CopyCompletionWorkflow(app, root);
             HotkeyWindow hotkeys = (HotkeyWindow)Field(app, "hotkeys");
             Exception modalError = null;
             using (System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 80 })

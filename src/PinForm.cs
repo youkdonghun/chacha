@@ -203,7 +203,7 @@ namespace ChachaCapture
 
             menu = new ContextMenuStrip();
             menu.ShowImageMargin = false;
-            menu.Items.Add(Item("복사", "Ctrl+C", delegate { CopyImage(); }));
+            menu.Items.Add(Item("복사하고 닫기", "Ctrl+C", delegate { CopyImage(); }));
             menu.Items.Add(Item("다른 이름으로 저장…", "Ctrl+S", delegate { SaveImage(); }));
             menu.Items.Add(Item("빠른 저장", "Ctrl+Shift+S", delegate { QuickSave(); }));
             menu.Items.Add(Item("인쇄…", "Ctrl+P", delegate { PrintImage(); }));
@@ -422,8 +422,9 @@ namespace ChachaCapture
             else IsSelected = !IsSelected;
         }
 
-        private void HideByUser()
+        internal void HideByUser()
         {
+            if (IsDisposed || ClosedByUser) return;
             ClosedByUser = true;
             Hide();
             Raise(HiddenByUser);
@@ -631,7 +632,8 @@ namespace ChachaCapture
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             // Ctrl+W and Shift+Esc retain their fixed recoverable/permanent meanings.
-            // A configured local binding takes precedence over the other pin commands.
+            // Ctrl+C always copies successfully before closing, even if also set as the close key.
+            if (keyData == (Keys.Control | Keys.C)) { CopyImage(); return true; }
             if (keyData == (Keys.Shift | Keys.Escape)) { Close(); return true; }
             if (keyData == (Keys.Control | Keys.W) || (hasCloseHotkey && keyData == closeKeyData))
             { HideByUser(); return true; }
@@ -646,7 +648,6 @@ namespace ChachaCapture
             }
             switch (keyData)
             {
-                case Keys.Control | Keys.C: CopyImage(); return true;
                 case Keys.Control | Keys.Shift | Keys.C: CopySourceText(); return true;
                 case Keys.Control | Keys.V: Raise(ReplaceRequested); return true;
                 case Keys.Control | Keys.A: Raise(SelectAllRequested); return true;
@@ -895,16 +896,22 @@ namespace ChachaCapture
         {
             try
             {
-                using (Bitmap copy = ExportImage())
-                {
-                    ClipboardImages.Copy(copy);
-                }
+                CopyImageAndClose(ClipboardImages.Copy);
             }
             catch (ExternalException)
             {
                 MessageBox.Show(this, "다른 프로그램이 클립보드를 사용 중입니다. 잠시 후 다시 시도해 주세요.",
                     "Chacha", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
+        }
+
+        // Complete the clipboard write before closing so a busy clipboard never loses the image.
+        // The writer is passed in to keep failure and pixel-fidelity regression checks offline.
+        internal void CopyImageAndClose(Action<Bitmap> copyImage)
+        {
+            if (copyImage == null) throw new ArgumentNullException("copyImage");
+            using (Bitmap copy = ExportImage()) copyImage(copy);
+            HideByUser();
         }
 
         private void SaveImage()
