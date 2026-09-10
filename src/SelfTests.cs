@@ -54,6 +54,16 @@ namespace ChachaCapture
                 Check(results, "Editor copy ownership and crop undo/redo pixel fidelity", TestEditorHistory);
                 Check(results, "Mosaic averages only the requested region", TestMosaic);
                 Check(results, "Blur stays inside region and handles small regions", TestBlur);
+                Check(results, "GIF frames, transforms, speed and paused session restore", delegate { ParityTests.Animation(Path.Combine(testRoot, "animation")); });
+                Check(results, "Recoverable pin close, destruction and selected movement", ParityTests.PinLifecycle);
+                Check(results, "Styled HTML clipboard rendering and fragment extraction", ParityTests.HtmlClipboard);
+                Check(results, "TGA raw/RLE decoding, orientation, palette and alpha", delegate { ParityTests.Tga(Path.Combine(testRoot, "tga")); });
+                Check(results, "History screen bounds and paired metadata retention", delegate { ParityTests.HistoryBounds(Path.Combine(testRoot, "history-bounds")); });
+                Check(results, "Image group archive lossless metadata and asset round-trip", delegate { ParityTests.GroupRoundTrip(Path.Combine(testRoot, "group-roundtrip")); });
+                Check(results, "Image group archive rejects malformed or missing assets", delegate { ParityTests.GroupValidation(Path.Combine(testRoot, "group-validation")); });
+                Check(results, "Editor dirty state and inline screen bounds across undo/redo/clear", ParityTests.EditorChangeLifecycle);
+                Check(results, "Pin editing preserves native pixels and rounded screen mapping", ParityTests.PinEditorMapping);
+                Check(results, "Legacy hide shortcut migration preserves user settings", delegate { ParityTests.SettingsMigration(Path.Combine(testRoot, "migration")); });
                 if (renderDirectory != null)
                     Check(results, "Deterministic fixture and UI previews", delegate { RenderPreviews(renderDirectory); });
             }
@@ -292,7 +302,7 @@ namespace ChachaCapture
                 using (Bitmap exported = pin.ExportImage()) EqualPixels(expected, exported, "Pin input clone");
                 pin.ScaleFactor = 0.75;
                 using (Bitmap exported = pin.ExportImage()) EqualPixels(expected, exported, "Pin full-resolution export after scaling");
-                DispatchKey(pin, Keys.D2);
+                DispatchKey(pin, Keys.D1);
                 using (Bitmap rotated = (Bitmap)expected.Clone())
                 {
                     rotated.RotateFlip(RotateFlipType.Rotate90FlipNone);
@@ -301,6 +311,9 @@ namespace ChachaCapture
                     rotated.RotateFlip(RotateFlipType.RotateNoneFlipX);
                     using (Bitmap exported = pin.ExportImage()) EqualPixels(rotated, exported, "Pin flipped export");
                 }
+                DispatchKey(pin, Keys.D3);
+                DispatchKey(pin, Keys.D2);
+                using (Bitmap exported = pin.ExportImage()) EqualPixels(expected, exported, "Pin counterclockwise rotation returns to source");
                 pin.ReplaceImage(expected);
                 using (Bitmap exported = pin.ExportImage()) EqualPixels(expected, exported, "Pin replacement");
                 IntPtr handle = pin.Handle;

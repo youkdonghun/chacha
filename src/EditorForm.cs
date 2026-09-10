@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Printing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -14,9 +15,42 @@ namespace ChachaCapture
     {
         public event Action<Bitmap> PinRequested;
         public event Action<Bitmap> ImageCommitted;
+        public event Action CloseRequested;
         public string SaveDirectory { get; set; }
+        public string QuickSaveDirectory { get; set; }
+        public bool IsInline { get; private set; }
+        public bool IsPinEditing { get; private set; }
+        public bool HasChanges
+        {
+            get
+            {
+                return _state != null && _initialState != null &&
+                    (_state.Marks.Count != 0 || !Object.ReferenceEquals(_state.Image, _initialState.Image) || _state.Origin != _initialState.Origin);
+            }
+        }
+        public Rectangle CurrentScreenBounds
+        {
+            get
+            {
+                if (IsInline)
+                    return new Rectangle(_desktopBounds.X + (int)Math.Round(_state.Origin.X), _desktopBounds.Y + (int)Math.Round(_state.Origin.Y), _state.Image.Width, _state.Image.Height);
+                Point origin = IsPinEditing ? Point.Round(_state.Origin) : _canvas.PointToScreen(Point.Round(ImageOrigin));
+                return new Rectangle(origin, new Size(Math.Max(1, (int)Math.Round(_state.Image.Width * _zoom)), Math.Max(1, (int)Math.Round(_state.Image.Height * ZoomY))));
+            }
+        }
+        public bool WhiteboardMode
+        {
+            get { return _whiteboardMode; }
+            set
+            {
+                _whiteboardMode = value;
+                _barsVisible = !value;
+                if (_inlineBar != null) _inlineBar.Visible = _barsVisible;
+                else if (_toolsPanel != null) _toolsPanel.Visible = _barsVisible;
+            }
+        }
 
-        private enum Tool { Move, Rectangle, Ellipse, Arrow, Line, Pen, Highlight, Text, Number, Mosaic, Blur, Crop, Eraser }
+        private enum Tool { Move, Rectangle, Ellipse, Arrow, Line, Pen, Highlight, Text, Number, Mosaic, Blur, Crop, Eraser, Polyline }
 
         private sealed class Mark
         {
@@ -28,7 +62,17 @@ namespace ChachaCapture
             internal float TextSize;
             internal string Text;
             internal int Number;
+            internal bool Filled;
+            internal string FontFamily = "Malgun Gothic";
+            internal FontStyle FontStyle = FontStyle.Regular;
+            internal float Rotation;
             internal List<PointF> Points = new List<PointF>();
+            internal Mark Clone()
+            {
+                Mark copy = (Mark)MemberwiseClone();
+                copy.Points = new List<PointF>(Points);
+                return copy;
+            }
         }
 
         private sealed class DocumentState
@@ -36,12 +80,14 @@ namespace ChachaCapture
             internal Bitmap Image;
             internal List<Mark> Marks;
             internal int NextNumber;
+            internal PointF Origin;
             internal DocumentState(Bitmap image) { Image = image; Marks = new List<Mark>(); NextNumber = 1; }
             internal DocumentState Snapshot()
             {
                 DocumentState copy = new DocumentState(Image);
                 copy.Marks = new List<Mark>(Marks);
                 copy.NextNumber = NextNumber;
+                copy.Origin = Origin;
                 return copy;
             }
         }
@@ -86,12 +132,17 @@ namespace ChachaCapture
         private readonly List<Font> _ownedFonts = new List<Font>();
         private readonly ToolTip _tips = new ToolTip();
         private DocumentState _state;
+        private DocumentState _initialState;
         private Bitmap _rendered;
         private Mark _draft;
         private Tool _tool = Tool.Arrow;
         private Color _color = Color.FromArgb(255, 83, 100);
         private float _lineWidth = 4;
         private float _textSize = 28;
+        private string _fontFamily = "Malgun Gothic";
+        private FontStyle _fontStyle = FontStyle.Regular;
+        private bool _filled;
+        private int _opacity = 255;
         private float _zoom = 1;
         private PointF _pan;
         private bool _fit = true;
@@ -106,12 +157,43 @@ namespace ChachaCapture
         private Button _undoButton;
         private Button _redoButton;
         private Button _colorButton;
+        private Panel _header;
+        private Panel _toolsPanel;
+        private Panel _footer;
+        private FlowLayoutPanel _toolRow;
+        private FlowLayoutPanel _optionsRow;
+        private FlowLayoutPanel _styleRow;
+        private Panel _inlineBar;
+        private Bitmap _desktop;
+        private Rectangle _desktopBounds;
+        private bool _barsVisible = true;
+        private int _selectedIndex = -1;
+        private DocumentState _transformBefore;
+        private Mark _transformOriginal;
+        private PointF _transformStart;
+        private RectangleF _transformBounds;
+        private int _transformHandle = -1;
+        private bool _transformChanged;
+        private NumericUpDown _widthControl;
+        private NumericUpDown _fontSizeControl;
+        private NumericUpDown _opacityControl;
+        private Button _fillButton;
+        private Button _boldButton;
+        private Button _italicButton;
+        private bool _syncingOptions;
+        private float _inlineScale = 1F;
+        private float _pinZoomY = 1F;
+        private bool _positioningPin;
+        private bool _whiteboardMode;
+        private bool HasFloatingBars { get { return IsInline || IsPinEditing; } }
+        private float ZoomY { get { return IsPinEditing ? _pinZoomY : _zoom; } }
 
         public EditorForm(Bitmap image)
         {
             if (image == null) throw new ArgumentNullException("image");
             SuspendLayout();
             _state = new DocumentState(CopyBitmap(image));
+            _initialState = _state.Snapshot();
             _ownedImages.Add(_state.Image);
             Text = "Chacha · 캡처 편집";
             StartPosition = FormStartPosition.CenterScreen;
@@ -136,9 +218,75 @@ namespace ChachaCapture
             Size = new Size(Math.Min(Width, work.Width), Math.Min(Height, work.Height));
         }
 
+        public EditorForm(Bitmap image, Bitmap desktop, Rectangle desktopBounds, Rectangle selectionBounds) : this(image)
+        {
+            if (desktop == null) throw new ArgumentNullException("desktop");
+            if (desktopBounds.Width <= 0 || desktopBounds.Height <= 0) throw new ArgumentException("Desktop bounds must be positive.", "desktopBounds");
+            SuspendLayout();
+            IsInline = true;
+            _desktop = CopyBitmap(desktop);
+            _desktopBounds = desktopBounds;
+            _state.Origin = new PointF(selectionBounds.X - desktopBounds.X, selectionBounds.Y - desktopBounds.Y);
+            _initialState.Origin = _state.Origin;
+            _zoom = 1F;
+            _fit = false;
+            _pan = PointF.Empty;
+            AutoScaleMode = AutoScaleMode.None;
+            MinimumSize = Size.Empty;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            ShowInTaskbar = false;
+            TopMost = true;
+            Bounds = desktopBounds;
+            ConfigureInlineBars();
+            ResumeLayout(true);
+            PositionInlineBars();
+            SetTool(Tool.Move);
+            Shown += delegate { Bounds = _desktopBounds; PositionInlineBars(); Activate(); _canvas.Focus(); };
+        }
+
+        /// <summary>Edit a pin at its exact displayed image rectangle; transparent window regions leave the desktop accessible.</summary>
+        public EditorForm(Bitmap image, Rectangle imageScreenBounds) : this(image)
+        {
+            if (imageScreenBounds.Width <= 0 || imageScreenBounds.Height <= 0) throw new ArgumentException("Image bounds must be positive.", "imageScreenBounds");
+            SuspendLayout();
+            IsPinEditing = true;
+            _zoom = (float)imageScreenBounds.Width / image.Width;
+            _pinZoomY = (float)imageScreenBounds.Height / image.Height;
+            _fit = false; _pan = PointF.Empty;
+            // Pin history stores absolute origins so the floating window can change its bounds without moving content.
+            _state.Origin = imageScreenBounds.Location; _initialState.Origin = _state.Origin;
+            AutoScaleMode = AutoScaleMode.None;
+            MinimumSize = Size.Empty;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            ShowInTaskbar = false; TopMost = true;
+            Bounds = imageScreenBounds;
+            ConfigureInlineBars();
+            ResumeLayout(true);
+            PositionPinnedBars();
+            SetTool(Tool.Move);
+            Shown += delegate { PositionPinnedBars(); Activate(); _canvas.Focus(); };
+        }
+
+        public void SelectTool(string name)
+        {
+            Tool tool;
+            if (!String.IsNullOrEmpty(name) && Enum.TryParse<Tool>(name, true, out tool)) SetTool(tool);
+        }
+
+        public Bitmap ExportImage() { return CopyBitmap(_rendered); }
+
+        public void CommitChanges()
+        {
+            FinishPolyline(); CancelGesture();
+            try { NotifyCommitted(); CloseInline(); }
+            catch (Exception ex) { ShowActionError("편집 적용", ex); }
+        }
+
         private void BuildInterface()
         {
-            Panel header = new Panel { Dock = DockStyle.Top, Height = 66, BackColor = _surface, Padding = new Padding(16, 8, 12, 8) };
+            Panel header = _header = new Panel { Dock = DockStyle.Top, Height = 66, BackColor = _surface, Padding = new Padding(16, 8, 12, 8) };
             Label title = new Label { Text = "CHACHA", AutoSize = true, Location = new Point(18, 10), ForeColor = _accent, Font = OwnFont("Segoe UI", 15F, FontStyle.Bold) };
             _sizeLabel = new Label { AutoSize = true, Location = new Point(19, 39), ForeColor = _muted, Font = OwnFont("Segoe UI", 8.5F, FontStyle.Regular) };
             FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 445, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = _surface, Padding = new Padding(0, 6, 0, 0) };
@@ -146,7 +294,7 @@ namespace ChachaCapture
             copy.Click += delegate { CopyImage(); };
             Button save = MakeButton("저장  Ctrl+S", 135, 36);
             save.Click += delegate { SaveImage(); };
-            Button pin = MakeButton("고정  Ctrl+P", 135, 36);
+            Button pin = MakeButton("고정  Ctrl+T", 135, 36);
             pin.BackColor = _accent;
             pin.ForeColor = Color.FromArgb(15, 20, 34);
             pin.Click += delegate { PinImage(); };
@@ -155,13 +303,14 @@ namespace ChachaCapture
             header.Controls.Add(title);
             header.Controls.Add(_sizeLabel);
 
-            Panel tools = new Panel { Dock = DockStyle.Top, Height = 91, BackColor = _surface };
-            FlowLayoutPanel toolRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 43, WrapContents = false, AutoScroll = true, Padding = new Padding(10, 2, 5, 0), BackColor = _surface };
-            AddTool(toolRow, Tool.Move, "이동", "V · 캔버스 이동 (Space 또는 마우스 가운데 버튼도 사용 가능)");
+            Panel tools = _toolsPanel = new Panel { Dock = DockStyle.Top, Height = 128, BackColor = _surface };
+            FlowLayoutPanel toolRow = _toolRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 43, WrapContents = false, AutoScroll = true, Padding = new Padding(4, 2, 0, 0), BackColor = _surface };
+            AddTool(toolRow, Tool.Move, "선택", "V · 주석 선택/이동/크기 변경 · 가운데 버튼: 캔버스 이동");
             AddTool(toolRow, Tool.Rectangle, "사각", "R · 사각형 (Shift: 정사각형)");
             AddTool(toolRow, Tool.Ellipse, "원", "E · 타원 (Shift: 원)");
             AddTool(toolRow, Tool.Arrow, "화살표", "A · 화살표 (Shift: 45도 단위)");
             AddTool(toolRow, Tool.Line, "선", "L · 직선 (Shift: 45도 단위)");
+            AddTool(toolRow, Tool.Polyline, "꺾은선", "P · 클릭해서 연결 · 우클릭/Enter로 완료");
             AddTool(toolRow, Tool.Pen, "펜", "B · 자유롭게 그리기");
             AddTool(toolRow, Tool.Highlight, "형광펜", "H · 반투명 형광펜");
             AddTool(toolRow, Tool.Text, "문자", "T · 클릭해서 글자 입력");
@@ -170,7 +319,7 @@ namespace ChachaCapture
             AddTool(toolRow, Tool.Blur, "흐림", "U · 영역을 드래그해 흐림 처리");
             AddTool(toolRow, Tool.Crop, "자르기", "C · 드래그한 영역으로 이미지 자르기");
             AddTool(toolRow, Tool.Eraser, "지우기", "X · 클릭한 주석 삭제 (이미지 픽셀은 그대로 유지)");
-            FlowLayoutPanel options = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, WrapContents = false, AutoScroll = true, Padding = new Padding(12, 6, 5, 0), BackColor = _surface };
+            FlowLayoutPanel options = _optionsRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, WrapContents = false, AutoScroll = true, Padding = new Padding(12, 3, 5, 0), BackColor = _surface };
             Color[] palette = { Color.FromArgb(255, 83, 100), Color.FromArgb(255, 212, 72), Color.FromArgb(75, 215, 150), Color.FromArgb(68, 208, 230), Color.FromArgb(92, 142, 255), Color.FromArgb(205, 119, 246), Color.White, Color.FromArgb(25, 28, 34) };
             foreach (Color color in palette)
             {
@@ -197,16 +346,16 @@ namespace ChachaCapture
             };
             options.Controls.Add(_colorButton);
             Label widthLabel = new Label { Text = "굵기", AutoSize = true, Margin = new Padding(8, 6, 2, 0), ForeColor = _muted };
-            NumericUpDown width = new NumericUpDown { Minimum = 1, Maximum = 40, Value = 4, Width = 47, Height = 28, Margin = new Padding(2, 2, 5, 0), BackColor = _background, ForeColor = _text, BorderStyle = BorderStyle.FixedSingle };
-            width.ValueChanged += delegate { _lineWidth = (float)width.Value; _canvas.Focus(); };
+            NumericUpDown width = _widthControl = new NumericUpDown { Minimum = 1, Maximum = 40, Value = 4, Width = 47, Height = 28, Margin = new Padding(2, 2, 5, 0), BackColor = _background, ForeColor = _text, BorderStyle = BorderStyle.FixedSingle };
+            width.ValueChanged += delegate { _lineWidth = (float)width.Value; ApplySelectedStyle(); _canvas.Focus(); };
             Label fontLabel = new Label { Text = "글자", AutoSize = true, Margin = new Padding(3, 6, 2, 0), ForeColor = _muted };
-            NumericUpDown fontSize = new NumericUpDown { Minimum = 8, Maximum = 160, Value = 28, Increment = 2, Width = 51, Height = 28, Margin = new Padding(2, 2, 8, 0), BackColor = _background, ForeColor = _text, BorderStyle = BorderStyle.FixedSingle };
-            fontSize.ValueChanged += delegate { _textSize = (float)fontSize.Value; _canvas.Focus(); };
+            NumericUpDown fontSize = _fontSizeControl = new NumericUpDown { Minimum = 8, Maximum = 300, Value = 28, Increment = 2, Width = 51, Height = 28, Margin = new Padding(2, 2, 8, 0), BackColor = _background, ForeColor = _text, BorderStyle = BorderStyle.FixedSingle };
+            fontSize.ValueChanged += delegate { _textSize = (float)fontSize.Value; ApplySelectedStyle(); _canvas.Focus(); };
             options.Controls.AddRange(new Control[] { widthLabel, width, fontLabel, fontSize });
             _undoButton = MakeButton("실행 취소", 77, 28);
             _redoButton = MakeButton("다시 실행", 77, 28);
             _tips.SetToolTip(_undoButton, "Ctrl+Z");
-            _tips.SetToolTip(_redoButton, "Ctrl+Y / Ctrl+Shift+Z");
+            _tips.SetToolTip(_redoButton, "Ctrl+Y");
             _undoButton.Click += delegate { Undo(); };
             _redoButton.Click += delegate { Redo(); };
             Button minus = MakeButton("−", 30, 28);
@@ -220,10 +369,30 @@ namespace ChachaCapture
             fit.Click += delegate { FitImage(); };
             _tips.SetToolTip(fit, "Ctrl+0 · 화면 크기에 맞추기");
             options.Controls.AddRange(new Control[] { _undoButton, _redoButton, minus, _zoomLabel, plus, fit });
+            FlowLayoutPanel styleRow = _styleRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, WrapContents = false, AutoScroll = true, Padding = new Padding(12, 2, 5, 0), BackColor = _surface };
+            _fillButton = MakeButton("채움 꺼짐", 78, 28);
+            _fillButton.Click += delegate { _filled = !_filled; UpdateStyleButtons(); ApplySelectedStyle(); };
+            _tips.SetToolTip(_fillButton, "사각형/타원을 단색으로 채웁니다");
+            Button font = MakeButton("서체", 52, 28);
+            font.Click += delegate { ChooseFont(); };
+            _boldButton = MakeButton("B", 30, 28);
+            _boldButton.Click += delegate { _fontStyle ^= FontStyle.Bold; UpdateStyleButtons(); ApplySelectedStyle(); };
+            _tips.SetToolTip(_boldButton, "글자 굵게");
+            _italicButton = MakeButton("I", 30, 28);
+            _italicButton.Click += delegate { _fontStyle ^= FontStyle.Italic; UpdateStyleButtons(); ApplySelectedStyle(); };
+            _tips.SetToolTip(_italicButton, "글자 기울임");
+            Label opacity = new Label { Text = "불투명도", AutoSize = true, Margin = new Padding(8, 6, 2, 0), ForeColor = _muted };
+            _opacityControl = new NumericUpDown { Minimum = 1, Maximum = 100, Value = 100, Width = 48, BackColor = _background, ForeColor = _text, Margin = new Padding(2, 2, 3, 0) };
+            _opacityControl.ValueChanged += delegate { _opacity = (int)Math.Round((double)_opacityControl.Value * 255 / 100); _color = Color.FromArgb(_opacity, _color); ApplySelectedStyle(); _canvas.Focus(); };
+            Button print = MakeButton("인쇄", 52, 28); print.Click += delegate { PrintImage(); }; _tips.SetToolTip(print, "Ctrl+P");
+            Button quick = MakeButton("빠른 저장", 76, 28); quick.Click += delegate { QuickSaveImage(); }; _tips.SetToolTip(quick, "Ctrl+Shift+S");
+            Button clear = MakeButton("편집 지우기", 86, 28); clear.Click += delegate { ClearEdits(); }; _tips.SetToolTip(clear, "Ctrl+Shift+Z · 모든 주석 지우기 (되돌릴 수 없음)");
+            styleRow.Controls.AddRange(new Control[] { _fillButton, font, _boldButton, _italicButton, opacity, _opacityControl, print, quick, clear });
+            tools.Controls.Add(styleRow);
             tools.Controls.Add(options);
             tools.Controls.Add(toolRow);
 
-            Panel footer = new Panel { Dock = DockStyle.Bottom, Height = 32, BackColor = _surface, Padding = new Padding(14, 0, 8, 0) };
+            Panel footer = _footer = new Panel { Dock = DockStyle.Bottom, Height = 32, BackColor = _surface, Padding = new Padding(14, 0, 8, 0) };
             _status = new Label { Dock = DockStyle.Fill, ForeColor = _muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
             footer.Controls.Add(_status);
             _canvas.Dock = DockStyle.Fill;
@@ -232,8 +401,9 @@ namespace ChachaCapture
             _canvas.MouseDown += CanvasMouseDown;
             _canvas.MouseMove += CanvasMouseMove;
             _canvas.MouseUp += CanvasMouseUp;
+            _canvas.MouseDoubleClick += CanvasDoubleClick;
             _canvas.MouseWheel += CanvasMouseWheel;
-            _canvas.MouseCaptureChanged += delegate { if (!_canvas.Capture && (_drawing || _panning)) CancelGesture(); };
+            _canvas.MouseCaptureChanged += delegate { if (!_canvas.Capture && (_drawing || _panning || _transformBefore != null)) CancelGesture(); };
             _canvas.Resize += delegate { if (_fit) FitImage(); else _canvas.Invalidate(); };
             Controls.Add(_canvas);
             Controls.Add(footer);
@@ -257,6 +427,119 @@ namespace ChachaCapture
             return font;
         }
 
+        private void ConfigureInlineBars()
+        {
+            using (Graphics graphics = CreateGraphics()) _inlineScale = Math.Max(1F, graphics.DpiX / 96F);
+            _header.Visible = false;
+            _toolsPanel.Visible = false;
+            _footer.Visible = false;
+            _inlineBar = new Panel { BackColor = _surface, Size = new Size(InlinePixels(548), InlinePixels(149)), Padding = new Padding(InlinePixels(2)), BorderStyle = BorderStyle.FixedSingle, AutoScroll = true };
+            string[] glyphs = { "↖", "□", "○", "➜", "╱", "✎", "▰", "T", "①", "▦", "◉", "⌗", "⌫", "⌁" };
+            foreach (KeyValuePair<Tool, Button> pair in _toolButtons)
+            {
+                pair.Value.Text = glyphs[(int)pair.Key];
+                pair.Value.Width = InlinePixels(33);
+                pair.Value.Height = InlinePixels(29);
+                pair.Value.Margin = new Padding(InlinePixels(2), InlinePixels(1), InlinePixels(2), InlinePixels(1));
+                pair.Value.Font = OwnFont("Segoe UI Symbol", 12F, FontStyle.Regular);
+            }
+            _toolRow.Parent = _inlineBar; _toolRow.Dock = DockStyle.None; _toolRow.SetBounds(InlinePixels(3), InlinePixels(3), InlinePixels(538), InlinePixels(34)); _toolRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
+            _optionsRow.Parent = _inlineBar; _optionsRow.Dock = DockStyle.None; _optionsRow.SetBounds(InlinePixels(3), InlinePixels(38), InlinePixels(538), InlinePixels(33)); _optionsRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
+            bool afterUndo = false;
+            foreach (Control control in _optionsRow.Controls)
+            {
+                if (control == _undoButton) afterUndo = true;
+                if (afterUndo) control.Visible = false;
+            }
+            _styleRow.Parent = _inlineBar; _styleRow.Dock = DockStyle.None; _styleRow.SetBounds(InlinePixels(3), InlinePixels(73), InlinePixels(538), InlinePixels(33)); _styleRow.Padding = new Padding(InlinePixels(4), InlinePixels(1), 0, 0);
+            foreach (Control control in _styleRow.Controls)
+                if (control.Text == "인쇄" || control.Text == "빠른 저장" || control.Text == "편집 지우기") control.Visible = false;
+            FlowLayoutPanel actions = new FlowLayoutPanel { Location = new Point(InlinePixels(4), InlinePixels(110)), Size = new Size(InlinePixels(536), InlinePixels(33)), WrapContents = false, BackColor = _surface };
+            _undoButton = MakeButton("↶", 32, 28); _undoButton.Enabled = _undo.Count > 0; _undoButton.Click += delegate { Undo(); }; _tips.SetToolTip(_undoButton, "Ctrl+Z · 실행 취소");
+            _redoButton = MakeButton("↷", 32, 28); _redoButton.Enabled = _redo.Count > 0; _redoButton.Click += delegate { Redo(); }; _tips.SetToolTip(_redoButton, "Ctrl+Y · 다시 실행");
+            actions.Controls.AddRange(new Control[] { _undoButton, _redoButton });
+            Button clear = MakeButton("지우기", 54, 28); clear.Click += delegate { ClearEdits(); }; _tips.SetToolTip(clear, "Ctrl+Shift+Z · 모든 편집 지우기");
+            Button print = MakeButton("인쇄", 47, 28); print.Click += delegate { PrintImage(); }; _tips.SetToolTip(print, "Ctrl+P");
+            Button quick = MakeButton("빠른 저장", 72, 28); quick.Click += delegate { QuickSaveImage(); }; _tips.SetToolTip(quick, "Ctrl+Shift+S");
+            Button save = MakeButton("저장", 50, 28); save.Click += delegate { SaveImage(); }; _tips.SetToolTip(save, "Ctrl+S");
+            Button pin = MakeButton(IsPinEditing ? "복사" : "고정", 50, 28); pin.Click += delegate { if (IsPinEditing) CopyImage(); else PinImage(); }; _tips.SetToolTip(pin, IsPinEditing ? "Ctrl+C · 이미지 복사" : "Ctrl+T · 화면에 고정하고 완료");
+            Button copy = MakeButton(IsPinEditing ? "완료 ✓" : "복사 ✓", 66, 28); copy.BackColor = _accent; copy.ForeColor = _background; copy.Click += delegate { if (IsPinEditing) CommitChanges(); else CopyImage(); }; _tips.SetToolTip(copy, IsPinEditing ? "Enter / Space / Esc · 편집 적용" : "Enter / Ctrl+C · 복사하고 완료");
+            Button close = MakeButton("×", 30, 28); close.Click += delegate { if (IsPinEditing) CommitChanges(); else CloseInline(); }; _tips.SetToolTip(close, IsPinEditing ? "편집을 적용하고 도구막대 닫기" : "Esc · 취소");
+            actions.Controls.AddRange(new Control[] { clear, print, quick, save, pin, copy, close });
+            if (_inlineScale != 1F) foreach (Control control in actions.Controls) control.Scale(new SizeF(_inlineScale, _inlineScale));
+            _inlineBar.Controls.Add(actions);
+            _canvas.Controls.Add(_inlineBar);
+            _inlineBar.BringToFront();
+            _canvas.Dock = DockStyle.Fill;
+        }
+
+        private int InlinePixels(int value) { return Math.Max(1, (int)Math.Round(value * _inlineScale)); }
+
+        private void PositionInlineBars()
+        {
+            if (IsPinEditing) { PositionPinnedBars(); return; }
+            if (!IsInline || _inlineBar == null) return;
+            Rectangle selection = new Rectangle((int)_state.Origin.X, (int)_state.Origin.Y, _state.Image.Width, _state.Image.Height);
+            Rectangle monitor = Screen.FromRectangle(new Rectangle(selection.X + _desktopBounds.X, selection.Y + _desktopBounds.Y, selection.Width, selection.Height)).Bounds;
+            if (!monitor.IntersectsWith(_desktopBounds)) monitor = _desktopBounds;
+            monitor.Offset(-_desktopBounds.X, -_desktopBounds.Y);
+            int width = Math.Min(InlinePixels(548), monitor.Width - InlinePixels(8));
+            _inlineBar.Width = Math.Max(InlinePixels(320), width);
+            int x = Math.Max(monitor.Left + 4, Math.Min(selection.Right - _inlineBar.Width, monitor.Right - _inlineBar.Width - 4));
+            int y = selection.Bottom + 8;
+            if (y + _inlineBar.Height > monitor.Bottom - 4) y = selection.Top - _inlineBar.Height - 8;
+            if (y < monitor.Top + 4) y = Math.Max(monitor.Top + 4, monitor.Bottom - _inlineBar.Height - 8);
+            _inlineBar.Location = new Point(x, y);
+            _inlineBar.Visible = _barsVisible;
+            _inlineBar.BringToFront();
+        }
+
+        private void PositionPinnedBars()
+        {
+            if (!IsPinEditing || _inlineBar == null || _positioningPin) return;
+            _positioningPin = true;
+            try
+            {
+                Rectangle image = new Rectangle((int)Math.Round(_state.Origin.X), (int)Math.Round(_state.Origin.Y), Math.Max(1, (int)Math.Round(_state.Image.Width * _zoom)), Math.Max(1, (int)Math.Round(_state.Image.Height * _pinZoomY)));
+                Rectangle monitor = Screen.FromRectangle(image).WorkingArea;
+                int barWidth = Math.Min(InlinePixels(548), monitor.Width - 8);
+                _inlineBar.Width = Math.Max(320, barWidth);
+                int x = Math.Max(monitor.Left + 4, Math.Min(image.Right - _inlineBar.Width, monitor.Right - _inlineBar.Width - 4));
+                int y = image.Bottom + 8;
+                if (y + _inlineBar.Height > monitor.Bottom - 4) y = image.Top - _inlineBar.Height - 8;
+                if (y < monitor.Top + 4) y = Math.Max(monitor.Top + 4, monitor.Bottom - _inlineBar.Height - 8);
+                Rectangle bar = new Rectangle(new Point(x, y), _inlineBar.Size);
+                Rectangle frame = image; frame.Inflate(2, 2);
+                Rectangle window = _barsVisible ? Rectangle.Union(frame, bar) : frame;
+                if (Bounds != window) Bounds = window;
+                _inlineBar.Location = new Point(bar.X - window.X, bar.Y - window.Y);
+                _inlineBar.Visible = _barsVisible;
+                _inlineBar.BringToFront();
+                Rectangle imageRegion = frame; imageRegion.Offset(-window.X, -window.Y);
+                Region region = new Region(imageRegion);
+                if (_barsVisible) region.Union(new Rectangle(_inlineBar.Location, _inlineBar.Size));
+                Region previous = Region;
+                Region = region;
+                if (previous != null) previous.Dispose();
+            }
+            finally { _positioningPin = false; }
+        }
+
+        private void ToggleBars()
+        {
+            _barsVisible = !_barsVisible;
+            if (HasFloatingBars) { _inlineBar.Visible = _barsVisible; if (IsPinEditing) PositionPinnedBars(); }
+            else _toolsPanel.Visible = _barsVisible;
+            _canvas.Focus();
+        }
+
+        private void CloseInline()
+        {
+            Action handler = CloseRequested;
+            if (handler != null) handler();
+            if (!IsDisposed) Close();
+        }
+
         private void AddTool(FlowLayoutPanel row, Tool tool, string name, string hint)
         {
             Tool selected = tool;
@@ -271,7 +554,9 @@ namespace ChachaCapture
 
         private void SetTool(Tool tool)
         {
+            if (_draft != null && _draft.Tool == Tool.Polyline) FinishPolyline();
             CancelGesture();
+            _selectedIndex = -1;
             _tool = tool;
             foreach (KeyValuePair<Tool, Button> pair in _toolButtons)
             {
@@ -285,14 +570,15 @@ namespace ChachaCapture
             string hint;
             switch (tool)
             {
-                case Tool.Move: hint = "드래그하여 이미지 이동 · 휠로 확대/축소 · Ctrl+0 화면 맞춤"; break;
+                case Tool.Move: hint = "주석 클릭: 선택/이동 · 핸들: 크기 조절 · 글자 더블클릭: 편집 · 가운데 버튼: 캔버스 이동"; break;
                 case Tool.Text: hint = "이미지 위를 클릭하여 글자를 넣으세요 · 글자 크기는 원본 이미지의 픽셀 단위입니다"; break;
                 case Tool.Number: hint = "클릭할 때마다 순서 번호를 표시합니다 · Ctrl+Z 실행 취소"; break;
                 case Tool.Mosaic: hint = "가릴 영역을 드래그하세요 · 굵기가 클수록 모자이크 블록이 커집니다"; break;
                 case Tool.Blur: hint = "흐리게 할 영역을 드래그하세요 · 굵기로 효과 강도를 조절합니다"; break;
                 case Tool.Crop: hint = "드래그한 영역으로 자릅니다 · Ctrl+Z로 되돌리기 · Esc로 드래그 취소"; break;
                 case Tool.Eraser: hint = "삭제할 주석을 클릭하세요 · 가장 위에 있는 주석부터 지워집니다"; break;
-                default: hint = "드래그하여 그리기 · Shift로 각도/비율 고정 · Space+드래그로 이동 · 휠로 확대/축소"; break;
+                case Tool.Polyline: hint = "클릭으로 점을 연결하세요 · 우클릭/Enter로 완료 · Esc로 취소"; break;
+                default: hint = "드래그하여 그리기 · Shift로 각도/비율 고정 · Space: 도구막대 표시 · 가운데 버튼: 이동"; break;
             }
             SetStatus(hint);
             _canvas.Focus();
@@ -300,28 +586,84 @@ namespace ChachaCapture
 
         private void SetColor(Color color)
         {
-            _color = color;
+            _color = Color.FromArgb(_opacity, color);
             _colorButton.BackColor = color;
             _colorButton.ForeColor = color.GetBrightness() > 0.6F ? Color.FromArgb(25, 28, 35) : Color.White;
+            ApplySelectedStyle();
             _canvas.Focus();
+        }
+
+        private void UpdateStyleButtons()
+        {
+            _fillButton.Text = _filled ? "채움 켜짐" : "채움 꺼짐";
+            _fillButton.BackColor = _filled ? Color.FromArgb(34, 72, 63) : Color.FromArgb(43, 49, 63);
+            _boldButton.BackColor = (_fontStyle & FontStyle.Bold) != 0 ? Color.FromArgb(34, 72, 63) : Color.FromArgb(43, 49, 63);
+            _italicButton.BackColor = (_fontStyle & FontStyle.Italic) != 0 ? Color.FromArgb(34, 72, 63) : Color.FromArgb(43, 49, 63);
+        }
+
+        private void ChooseFont()
+        {
+            using (FontDialog dialog = new FontDialog())
+            using (Font initial = new Font(_fontFamily, _textSize, _fontStyle, GraphicsUnit.Point))
+            {
+                dialog.Font = initial;
+                dialog.ShowEffects = false;
+                dialog.MinSize = 8; dialog.MaxSize = 300;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                _fontFamily = dialog.Font.FontFamily.Name;
+                _fontStyle = dialog.Font.Style;
+                _textSize = Math.Max(8, Math.Min(300, dialog.Font.Size));
+                _syncingOptions = true;
+                _fontSizeControl.Value = (decimal)_textSize;
+                _syncingOptions = false;
+                UpdateStyleButtons();
+                ApplySelectedStyle();
+            }
+        }
+
+        private void ApplySelectedStyle()
+        {
+            if (_syncingOptions || _selectedIndex < 0 || _selectedIndex >= _state.Marks.Count) return;
+            Mark changed = _state.Marks[_selectedIndex].Clone();
+            changed.Color = _color; changed.Width = _lineWidth; changed.TextSize = _textSize;
+            changed.Filled = _filled; changed.FontFamily = _fontFamily; changed.FontStyle = _fontStyle;
+            PushUndo();
+            _state.Marks[_selectedIndex] = changed;
+            UpdateRender();
+        }
+
+        private void SyncSelectedOptions()
+        {
+            if (_selectedIndex < 0 || _selectedIndex >= _state.Marks.Count) return;
+            Mark mark = _state.Marks[_selectedIndex];
+            _syncingOptions = true;
+            _color = mark.Color; _opacity = mark.Color.A; _lineWidth = mark.Width; _textSize = mark.TextSize;
+            _filled = mark.Filled; _fontFamily = mark.FontFamily; _fontStyle = mark.FontStyle;
+            _widthControl.Value = Math.Max(_widthControl.Minimum, Math.Min(_widthControl.Maximum, (decimal)mark.Width));
+            _fontSizeControl.Value = Math.Max(_fontSizeControl.Minimum, Math.Min(_fontSizeControl.Maximum, (decimal)mark.TextSize));
+            _opacityControl.Value = Math.Max(1, Math.Round(mark.Color.A * 100M / 255));
+            _colorButton.BackColor = Color.FromArgb(255, mark.Color);
+            UpdateStyleButtons();
+            _syncingOptions = false;
         }
 
         private PointF ImageOrigin
         {
-            get { return new PointF((_canvas.Width - _state.Image.Width * _zoom) / 2F + _pan.X, (_canvas.Height - _state.Image.Height * _zoom) / 2F + _pan.Y); }
+            get { if (IsPinEditing) return new PointF(_state.Origin.X - Left, _state.Origin.Y - Top); if (IsInline) return _state.Origin; return new PointF((_canvas.Width - _state.Image.Width * _zoom) / 2F + _pan.X, (_canvas.Height - _state.Image.Height * _zoom) / 2F + _pan.Y); }
         }
 
         private PointF ToImage(Point point, bool clamp)
         {
             PointF origin = ImageOrigin;
             float x = (point.X - origin.X) / _zoom;
-            float y = (point.Y - origin.Y) / _zoom;
+            float y = (point.Y - origin.Y) / ZoomY;
             if (clamp) { x = Math.Max(0, Math.Min(_state.Image.Width, x)); y = Math.Max(0, Math.Min(_state.Image.Height, y)); }
             return new PointF(x, y);
         }
 
         private void FitImage()
         {
+            if (HasFloatingBars) { if (IsInline) _zoom = 1; PositionInlineBars(); _canvas.Invalidate(); return; }
             if (_state == null || _canvas.Width < 2 || _canvas.Height < 2) return;
             _fit = true;
             _pan = PointF.Empty;
@@ -332,6 +674,7 @@ namespace ChachaCapture
 
         private void ZoomAt(float requested, Point anchor)
         {
+            if (HasFloatingBars) return;
             if (_drawing) return;
             PointF imagePoint = ToImage(anchor, false);
             _zoom = Math.Max(0.02F, Math.Min(16F, requested));
@@ -346,6 +689,11 @@ namespace ChachaCapture
 
         private void CanvasMouseWheel(object sender, MouseEventArgs e)
         {
+            if (_tool != Tool.Move && (ModifierKeys & Keys.Control) == 0)
+            {
+                _widthControl.Value = Math.Max(_widthControl.Minimum, Math.Min(_widthControl.Maximum, _widthControl.Value + (e.Delta > 0 ? 1 : -1)));
+                return;
+            }
             if ((ModifierKeys & Keys.Control) != 0 || (ModifierKeys & Keys.Shift) == 0)
                 ZoomAt(_zoom * (float)Math.Pow(1.15, e.Delta / 120.0), e.Location);
             else
@@ -359,8 +707,13 @@ namespace ChachaCapture
         private void PaintCanvas(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
+            if (IsInline && _desktop != null)
+            {
+                g.DrawImage(_desktop, new Rectangle(Point.Empty, _desktopBounds.Size), 0, 0, _desktop.Width, _desktop.Height, GraphicsUnit.Pixel);
+                using (SolidBrush dim = new SolidBrush(Color.FromArgb(140, 0, 0, 0))) g.FillRectangle(dim, _canvas.ClientRectangle);
+            }
             PointF origin = ImageOrigin;
-            RectangleF imageBounds = new RectangleF(origin.X, origin.Y, _state.Image.Width * _zoom, _state.Image.Height * _zoom);
+            RectangleF imageBounds = new RectangleF(origin.X, origin.Y, _state.Image.Width * _zoom, _state.Image.Height * ZoomY);
             using (SolidBrush shadow = new SolidBrush(Color.FromArgb(10, 12, 17)))
                 g.FillRectangle(shadow, imageBounds.X + 5, imageBounds.Y + 7, imageBounds.Width, imageBounds.Height);
             GraphicsState state = g.Save();
@@ -374,7 +727,7 @@ namespace ChachaCapture
                         g.FillRectangle(((x / 12 + y / 12) & 1) == 0 ? a : b, x, y, 12, 12);
             }
             g.TranslateTransform(origin.X, origin.Y);
-            g.ScaleTransform(_zoom, _zoom);
+            g.ScaleTransform(_zoom, ZoomY);
             g.InterpolationMode = _zoom >= 2F ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = PixelOffsetMode.Half;
             if (_rendered != null) g.DrawImage(_rendered, new Rectangle(0, 0, _rendered.Width, _rendered.Height), 0, 0, _rendered.Width, _rendered.Height, GraphicsUnit.Pixel);
@@ -382,10 +735,21 @@ namespace ChachaCapture
             if (_draft != null && _draft.Tool != Tool.Crop && _draft.Tool != Tool.Mosaic && _draft.Tool != Tool.Blur) DrawMark(g, _draft);
             g.Restore(state);
 
+            if (IsInline)
+            {
+                using (Pen outline = new Pen(_accent, 1F)) g.DrawRectangle(outline, imageBounds.X - 1, imageBounds.Y - 1, imageBounds.Width + 1, imageBounds.Height + 1);
+                string info = _state.Image.Width + " × " + _state.Image.Height + "   ·   Enter 복사   Ctrl+T 고정   Space 도구";
+                Size infoSize = TextRenderer.MeasureText(info, Font);
+                Rectangle label = new Rectangle((int)imageBounds.Left, Math.Max(0, (int)imageBounds.Top - 26), infoSize.Width + 12, 23);
+                using (SolidBrush fill = new SolidBrush(Color.FromArgb(230, _surface))) g.FillRectangle(fill, label);
+                TextRenderer.DrawText(g, info, Font, label, _text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+            PaintSelection(g);
+
             if (_draft != null && (_draft.Tool == Tool.Crop || _draft.Tool == Tool.Mosaic || _draft.Tool == Tool.Blur))
             {
                 RectangleF rect = Normalized(_draft.Start, _draft.End);
-                RectangleF screenRect = new RectangleF(origin.X + rect.X * _zoom, origin.Y + rect.Y * _zoom, rect.Width * _zoom, rect.Height * _zoom);
+                RectangleF screenRect = new RectangleF(origin.X + rect.X * _zoom, origin.Y + rect.Y * ZoomY, rect.Width * _zoom, rect.Height * ZoomY);
                 if (_draft.Tool == Tool.Crop)
                 {
                     using (Region outside = new Region(imageBounds))
@@ -411,8 +775,14 @@ namespace ChachaCapture
         private void CanvasMouseDown(object sender, MouseEventArgs e)
         {
             _canvas.Focus();
-            if (e.Button == MouseButtons.Right) { CancelGesture(); return; }
-            if (e.Button == MouseButtons.Middle || (e.Button == MouseButtons.Left && (_spaceHeld || _tool == Tool.Move)))
+            if (e.Button == MouseButtons.Right)
+            {
+                if (_draft != null && _draft.Tool == Tool.Polyline) FinishPolyline();
+                else if (_drawing) CancelGesture();
+                else { _selectedIndex = -1; SetTool(Tool.Move); }
+                return;
+            }
+            if (e.Button == MouseButtons.Middle && !HasFloatingBars)
             {
                 _panning = true;
                 _panStart = e.Location;
@@ -423,11 +793,28 @@ namespace ChachaCapture
             }
             if (e.Button != MouseButtons.Left) return;
             PointF point = ToImage(e.Location, false);
+            if (_selectedIndex >= 0 && _selectedIndex < _state.Marks.Count)
+            {
+                int handle = HitSelectionHandle(point);
+                if (handle >= 0) { BeginTransform(point, handle); return; }
+            }
             if (point.X < 0 || point.Y < 0 || point.X >= _state.Image.Width || point.Y >= _state.Image.Height) return;
+            if (_tool == Tool.Move)
+            {
+                _selectedIndex = HitAnnotation(point);
+                if (_selectedIndex >= 0) { SyncSelectedOptions(); BeginTransform(point, -1); }
+                _canvas.Invalidate();
+                return;
+            }
             if (_tool == Tool.Eraser) { EraseAt(point); return; }
             if (_tool == Tool.Text)
             {
-                string text = PromptText();
+                int existing = HitAnnotation(point);
+                if (existing >= 0 && _state.Marks[existing].Tool == Tool.Text)
+                {
+                    _selectedIndex = existing; SyncSelectedOptions(); BeginTransform(point, -1); _canvas.Invalidate(); return;
+                }
+                string text = PromptText(null);
                 if (String.IsNullOrWhiteSpace(text)) return;
                 Mark mark = CreateMark(point);
                 mark.Text = text;
@@ -446,6 +833,15 @@ namespace ChachaCapture
                 UpdateRender();
                 return;
             }
+            if (_tool == Tool.Polyline)
+            {
+                if (_draft == null) { _draft = CreateMark(point); _draft.Points.Add(point); }
+                else if (DistanceSquared(_draft.Points[_draft.Points.Count - 1], point) > 1) _draft.Points.Add(point);
+                _draft.End = point;
+                if (e.Clicks > 1) FinishPolyline();
+                _canvas.Invalidate();
+                return;
+            }
             _draft = CreateMark(point);
             _draft.Points.Add(point);
             _drawing = true;
@@ -455,11 +851,12 @@ namespace ChachaCapture
 
         private Mark CreateMark(PointF point)
         {
-            return new Mark { Tool = _tool, Start = point, End = point, Color = _color, Width = _lineWidth, TextSize = _textSize };
+            return new Mark { Tool = _tool, Start = point, End = point, Color = _color, Width = _lineWidth, TextSize = _textSize, Filled = _filled, FontFamily = _fontFamily, FontStyle = _fontStyle };
         }
 
         private void CanvasMouseMove(object sender, MouseEventArgs e)
         {
+            if (_transformBefore != null) { UpdateTransform(ToImage(e.Location, false)); return; }
             if (_panning)
             {
                 _fit = false;
@@ -467,7 +864,21 @@ namespace ChachaCapture
                 _canvas.Invalidate();
                 return;
             }
-            if (!_drawing || _draft == null) return;
+            if (_draft != null && _draft.Tool == Tool.Polyline)
+            {
+                PointF next = ToImage(e.Location, true);
+                if ((ModifierKeys & Keys.Shift) != 0 && _draft.Points.Count > 0) next = SnapLine(_draft.Points[_draft.Points.Count - 1], next);
+                _draft.End = next; _canvas.Invalidate(); return;
+            }
+            if (!_drawing || _draft == null)
+            {
+                if (_selectedIndex >= 0)
+                {
+                    int handle = HitSelectionHandle(ToImage(e.Location, false));
+                    _canvas.Cursor = handle == 8 ? Cursors.Cross : handle >= 0 ? Cursors.SizeAll : _tool == Tool.Move ? Cursors.Default : Cursors.Cross;
+                }
+                return;
+            }
             PointF point = ToImage(e.Location, true);
             if ((ModifierKeys & Keys.Shift) != 0)
             {
@@ -500,6 +911,17 @@ namespace ChachaCapture
 
         private void CanvasMouseUp(object sender, MouseEventArgs e)
         {
+            if (_transformBefore != null)
+            {
+                if (_transformChanged)
+                {
+                    _undo.Add(_transformBefore); _redo.Clear(); TrimHistory();
+                }
+                _transformBefore = null; _transformOriginal = null; _transformChanged = false;
+                _canvas.Capture = false;
+                UpdateRender(); SyncSelectedOptions();
+                return;
+            }
             if (_panning) { EndPan(); return; }
             if (!_drawing || _draft == null || e.Button != MouseButtons.Left) return;
             CanvasMouseMove(sender, e);
@@ -530,17 +952,201 @@ namespace ChachaCapture
 
         private void UpdateCursor()
         {
-            _canvas.Cursor = _spaceHeld || _tool == Tool.Move ? Cursors.Hand : _tool == Tool.Text ? Cursors.IBeam : _tool == Tool.Eraser ? Cursors.No : Cursors.Cross;
+            _canvas.Cursor = _tool == Tool.Move ? Cursors.Default : _tool == Tool.Text ? Cursors.IBeam : _tool == Tool.Eraser ? Cursors.No : Cursors.Cross;
         }
 
         private void CancelGesture()
         {
+            if (_transformBefore != null)
+            {
+                _state = _transformBefore; _transformBefore = null; _transformOriginal = null; _transformChanged = false;
+                UpdateRender();
+            }
             _drawing = false;
             _draft = null;
             _panning = false;
             _canvas.Capture = false;
             UpdateCursor();
             _canvas.Invalidate();
+        }
+
+        private static PointF SnapLine(PointF start, PointF end)
+        {
+            double dx = end.X - start.X, dy = end.Y - start.Y;
+            double length = Math.Sqrt(dx * dx + dy * dy);
+            double angle = Math.Round(Math.Atan2(dy, dx) / (Math.PI / 4)) * Math.PI / 4;
+            return new PointF(start.X + (float)(Math.Cos(angle) * length), start.Y + (float)(Math.Sin(angle) * length));
+        }
+
+        private void FinishPolyline()
+        {
+            if (_draft == null || _draft.Tool != Tool.Polyline) return;
+            Mark line = _draft;
+            _draft = null; _drawing = false; _canvas.Capture = false;
+            if (line.Points.Count >= 2)
+            {
+                line.End = line.Points[line.Points.Count - 1];
+                PushUndo(); _state.Marks.Add(line); UpdateRender();
+            }
+            _canvas.Invalidate();
+        }
+
+        private void CanvasDoubleClick(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            if (_tool == Tool.Polyline) { FinishPolyline(); return; }
+            PointF point = ToImage(e.Location, false);
+            int index = HitAnnotation(point);
+            if (index >= 0 && _state.Marks[index].Tool == Tool.Text)
+            {
+                CancelGesture();
+                string text = PromptText(_state.Marks[index].Text);
+                if (text == null) return;
+                PushUndo();
+                Mark mark = _state.Marks[index].Clone(); mark.Text = text;
+                _state.Marks[index] = mark; _selectedIndex = index; UpdateRender();
+                return;
+            }
+            if (IsInline && _tool == Tool.Move && index < 0 && new RectangleF(0, 0, _state.Image.Width, _state.Image.Height).Contains(point)) CopyImage();
+        }
+
+        private int HitAnnotation(PointF point)
+        {
+            for (int i = _state.Marks.Count - 1; i >= 0; i--)
+                if (HitTest(_state.Marks[i], point, Math.Max(4F, 6F / _zoom))) return i;
+            return -1;
+        }
+
+        private void BeginTransform(PointF point, int handle)
+        {
+            _transformBefore = _state.Snapshot();
+            _transformOriginal = _state.Marks[_selectedIndex].Clone();
+            _transformBounds = MarkBounds(_transformOriginal);
+            _transformStart = point; _transformHandle = handle; _transformChanged = false;
+            _canvas.Capture = true;
+        }
+
+        private void UpdateTransform(PointF point)
+        {
+            float dx = point.X - _transformStart.X, dy = point.Y - _transformStart.Y;
+            if (!_transformChanged && dx * dx + dy * dy < 0.25F) return;
+            Mark changed = _transformOriginal.Clone();
+            if (_transformHandle == 8)
+            {
+                PointF center = new PointF(_transformBounds.X + _transformBounds.Width / 2, _transformBounds.Y + _transformBounds.Height / 2);
+                double before = Math.Atan2(_transformStart.Y - center.Y, _transformStart.X - center.X);
+                double after = Math.Atan2(point.Y - center.Y, point.X - center.X);
+                changed.Rotation += (float)((after - before) * 180 / Math.PI);
+                if ((ModifierKeys & Keys.Shift) != 0) changed.Rotation = (float)Math.Round(changed.Rotation / 15) * 15;
+            }
+            else if (_transformHandle < 0) TransformMark(changed, _transformBounds, new RectangleF(_transformBounds.X + dx, _transformBounds.Y + dy, _transformBounds.Width, _transformBounds.Height), false);
+            else
+            {
+                float left = _transformBounds.Left, right = _transformBounds.Right, top = _transformBounds.Top, bottom = _transformBounds.Bottom;
+                int h = _transformHandle;
+                if (h == 0 || h == 6 || h == 7) left = Math.Min(right - 4, left + dx);
+                if (h == 2 || h == 3 || h == 4) right = Math.Max(left + 4, right + dx);
+                if (h == 0 || h == 1 || h == 2) top = Math.Min(bottom - 4, top + dy);
+                if (h == 4 || h == 5 || h == 6) bottom = Math.Max(top + 4, bottom + dy);
+                RectangleF target = RectangleF.FromLTRB(left, top, right, bottom);
+                if ((ModifierKeys & Keys.Shift) != 0)
+                {
+                    float ratio = Math.Max(target.Width / _transformBounds.Width, target.Height / _transformBounds.Height);
+                    target.Width = _transformBounds.Width * ratio; target.Height = _transformBounds.Height * ratio;
+                }
+                TransformMark(changed, _transformBounds, target, true);
+            }
+            _state.Marks[_selectedIndex] = changed;
+            _transformChanged = true; UpdateRender();
+        }
+
+        private static PointF TransformPoint(PointF point, RectangleF source, RectangleF target)
+        {
+            return new PointF(target.X + (point.X - source.X) * target.Width / Math.Max(0.001F, source.Width), target.Y + (point.Y - source.Y) * target.Height / Math.Max(0.001F, source.Height));
+        }
+
+        private static void TransformMark(Mark mark, RectangleF source, RectangleF target, bool resize)
+        {
+            mark.Start = TransformPoint(mark.Start, source, target); mark.End = TransformPoint(mark.End, source, target);
+            for (int i = 0; i < mark.Points.Count; i++) mark.Points[i] = TransformPoint(mark.Points[i], source, target);
+            if (resize && (mark.Tool == Tool.Text || mark.Tool == Tool.Number))
+                mark.TextSize = Math.Max(8, Math.Min(300, mark.TextSize * Math.Min(target.Width / source.Width, target.Height / source.Height)));
+        }
+
+        private static SizeF MeasureMarkText(Mark mark)
+        {
+            using (Bitmap bitmap = new Bitmap(1, 1))
+            using (Graphics g = Graphics.FromImage(bitmap))
+            using (Font font = new Font(mark.FontFamily, mark.TextSize, mark.FontStyle, GraphicsUnit.Pixel)) return g.MeasureString(mark.Text ?? "", font);
+        }
+
+        private static RectangleF MarkBounds(Mark mark)
+        {
+            RectangleF bounds = Normalized(mark.Start, mark.End);
+            if (mark.Tool == Tool.Pen || mark.Tool == Tool.Highlight || mark.Tool == Tool.Polyline)
+            {
+                foreach (PointF point in mark.Points) bounds = RectangleF.Union(bounds, new RectangleF(point.X, point.Y, 0.01F, 0.01F));
+            }
+            else if (mark.Tool == Tool.Text)
+            {
+                SizeF size = MeasureMarkText(mark);
+                bounds = new RectangleF(mark.Start, size);
+                if (Math.Abs(mark.Rotation) > 0.01F)
+                {
+                    PointF center = new PointF(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
+                    PointF[] corners = { new PointF(bounds.Left, bounds.Top), new PointF(bounds.Right, bounds.Top), new PointF(bounds.Right, bounds.Bottom), new PointF(bounds.Left, bounds.Bottom) };
+                    using (Matrix matrix = new Matrix()) { matrix.RotateAt(mark.Rotation, center); matrix.TransformPoints(corners); }
+                    bounds = new RectangleF(corners[0], SizeF.Empty);
+                    foreach (PointF corner in corners) bounds = RectangleF.Union(bounds, new RectangleF(corner, new SizeF(0.01F, 0.01F)));
+                }
+            }
+            else if (mark.Tool == Tool.Number)
+            {
+                float radius = Math.Max(16, mark.TextSize * 0.7F);
+                bounds = new RectangleF(mark.Start.X - radius, mark.Start.Y - radius, radius * 2, radius * 2);
+            }
+            if (bounds.Width < 4) { bounds.X -= (4 - bounds.Width) / 2; bounds.Width = 4; }
+            if (bounds.Height < 4) { bounds.Y -= (4 - bounds.Height) / 2; bounds.Height = 4; }
+            return bounds;
+        }
+
+        private PointF[] SelectionHandles()
+        {
+            RectangleF bounds = MarkBounds(_state.Marks[_selectedIndex]);
+            float cx = bounds.X + bounds.Width / 2, cy = bounds.Y + bounds.Height / 2;
+            return new PointF[] { new PointF(bounds.Left, bounds.Top), new PointF(cx, bounds.Top), new PointF(bounds.Right, bounds.Top), new PointF(bounds.Right, cy), new PointF(bounds.Right, bounds.Bottom), new PointF(cx, bounds.Bottom), new PointF(bounds.Left, bounds.Bottom), new PointF(bounds.Left, cy), new PointF(cx, bounds.Top - 24 / _zoom) };
+        }
+
+        private int HitSelectionHandle(PointF point)
+        {
+            if (_selectedIndex < 0 || _selectedIndex >= _state.Marks.Count) return -1;
+            PointF[] handles = SelectionHandles();
+            int count = _state.Marks[_selectedIndex].Tool == Tool.Text ? 9 : 8;
+            for (int i = 0; i < count; i++) if (DistanceSquared(point, handles[i]) <= 64 / (_zoom * _zoom)) return i;
+            return -1;
+        }
+
+        private void PaintSelection(Graphics graphics)
+        {
+            if (_selectedIndex < 0 || _selectedIndex >= _state.Marks.Count) return;
+            RectangleF bounds = MarkBounds(_state.Marks[_selectedIndex]);
+            PointF origin = ImageOrigin;
+            RectangleF rectangle = new RectangleF(origin.X + bounds.X * _zoom, origin.Y + bounds.Y * ZoomY, bounds.Width * _zoom, bounds.Height * ZoomY);
+            using (Pen border = new Pen(_accent, 1))
+            using (SolidBrush fill = new SolidBrush(_surface))
+            {
+                border.DashStyle = DashStyle.Dash;
+                graphics.DrawRectangle(border, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height);
+                border.DashStyle = DashStyle.Solid;
+                PointF[] handles = SelectionHandles();
+                int count = _state.Marks[_selectedIndex].Tool == Tool.Text ? 9 : 8;
+                if (count == 9) graphics.DrawLine(border, rectangle.X + rectangle.Width / 2, rectangle.Top, rectangle.X + rectangle.Width / 2, rectangle.Top - 24);
+                for (int i = 0; i < count; i++)
+                {
+                    RectangleF handle = new RectangleF(origin.X + handles[i].X * _zoom - 3, origin.Y + handles[i].Y * ZoomY - 3, 6, 6);
+                    graphics.FillRectangle(fill, handle); graphics.DrawRectangle(border, handle.X, handle.Y, handle.Width, handle.Height);
+                }
+            }
         }
 
         private void PushUndo()
@@ -553,6 +1159,7 @@ namespace ChachaCapture
         private void Undo()
         {
             CancelGesture();
+            _selectedIndex = -1;
             if (_undo.Count == 0) return;
             _redo.Add(_state);
             bool sizeChanged = _state.Image.Size != _undo[_undo.Count - 1].Image.Size;
@@ -566,6 +1173,7 @@ namespace ChachaCapture
         private void Redo()
         {
             CancelGesture();
+            _selectedIndex = -1;
             if (_redo.Count == 0) return;
             _undo.Add(_state);
             bool sizeChanged = _state.Image.Size != _redo[_redo.Count - 1].Image.Size;
@@ -590,6 +1198,7 @@ namespace ChachaCapture
         {
             HashSet<Bitmap> result = new HashSet<Bitmap>();
             result.Add(_state.Image);
+            if (_initialState != null) result.Add(_initialState.Image);
             foreach (DocumentState state in _undo) result.Add(state.Image);
             foreach (DocumentState state in _redo) result.Add(state.Image);
             return result;
@@ -612,7 +1221,10 @@ namespace ChachaCapture
             }
             PushUndo();
             _ownedImages.Add(cropped);
+            PointF origin = new PointF(_state.Origin.X + bounds.X * (IsPinEditing ? _zoom : 1F), _state.Origin.Y + bounds.Y * (IsPinEditing ? ZoomY : 1F));
             _state = new DocumentState(cropped);
+            _state.Origin = origin;
+            _selectedIndex = -1;
             TrimHistory();
             UpdateRender();
             FitImage();
@@ -626,6 +1238,7 @@ namespace ChachaCapture
                 if (!HitTest(_state.Marks[i], point, Math.Max(5F, 7F / _zoom))) continue;
                 PushUndo();
                 _state.Marks.RemoveAt(i);
+                _selectedIndex = -1;
                 UpdateRender();
                 SetStatus("주석을 지웠습니다 · Ctrl+Z로 복원");
                 return;
@@ -637,28 +1250,18 @@ namespace ChachaCapture
         {
             float radius = tolerance + mark.Width;
             if (mark.Tool == Tool.Line || mark.Tool == Tool.Arrow) return SegmentDistance(point, mark.Start, mark.End) <= radius * (mark.Tool == Tool.Arrow ? 2 : 1);
-            if (mark.Tool == Tool.Pen || mark.Tool == Tool.Highlight)
+            if (mark.Tool == Tool.Pen || mark.Tool == Tool.Highlight || mark.Tool == Tool.Polyline)
             {
                 if (mark.Tool == Tool.Highlight) radius += Math.Max(12, mark.Width * 4) / 2;
                 if (mark.Points.Count == 1) return DistanceSquared(point, mark.Points[0]) <= radius * radius;
                 for (int i = 1; i < mark.Points.Count; i++) if (SegmentDistance(point, mark.Points[i - 1], mark.Points[i]) <= radius) return true;
                 return false;
             }
-            RectangleF bounds = Normalized(mark.Start, mark.End);
+            RectangleF bounds = MarkBounds(mark);
             if (mark.Tool == Tool.Number)
             {
                 float r = Math.Max(16, mark.TextSize * 0.7F);
                 return DistanceSquared(point, mark.Start) <= (r + tolerance) * (r + tolerance);
-            }
-            if (mark.Tool == Tool.Text)
-            {
-                using (Bitmap measure = new Bitmap(1, 1))
-                using (Graphics g = Graphics.FromImage(measure))
-                using (Font font = new Font("Malgun Gothic", mark.TextSize, FontStyle.Bold, GraphicsUnit.Pixel))
-                {
-                    SizeF size = g.MeasureString(mark.Text, font);
-                    bounds = new RectangleF(mark.Start, size);
-                }
             }
             bounds.Inflate(tolerance, tolerance);
             return bounds.Contains(point);
@@ -681,6 +1284,7 @@ namespace ChachaCapture
             _sizeLabel.Text = _state.Image.Width + " × " + _state.Image.Height + " px  ·  원본 해상도";
             _undoButton.Enabled = _undo.Count > 0;
             _redoButton.Enabled = _redo.Count > 0;
+            if (HasFloatingBars) PositionInlineBars();
             _canvas.Invalidate();
         }
 
@@ -712,7 +1316,7 @@ namespace ChachaCapture
         private static void DrawMark(Graphics g, Mark mark)
         {
             RectangleF rect = Normalized(mark.Start, mark.End);
-            Color color = mark.Tool == Tool.Highlight ? Color.FromArgb(95, mark.Color) : mark.Color;
+            Color color = mark.Tool == Tool.Highlight ? Color.FromArgb(Math.Max(1, 95 * mark.Color.A / 255), mark.Color) : mark.Color;
             float width = mark.Tool == Tool.Highlight ? Math.Max(12, mark.Width * 4) : mark.Width;
             using (Pen pen = new Pen(color, width))
             using (SolidBrush brush = new SolidBrush(color))
@@ -723,10 +1327,18 @@ namespace ChachaCapture
                 switch (mark.Tool)
                 {
                     case Tool.Rectangle:
-                        if (rect.Width > 0 && rect.Height > 0) g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+                        if (rect.Width > 0 && rect.Height > 0)
+                        {
+                            if (mark.Filled) g.FillRectangle(brush, rect);
+                            else g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+                        }
                         break;
                     case Tool.Ellipse:
-                        if (rect.Width > 0 && rect.Height > 0) g.DrawEllipse(pen, rect);
+                        if (rect.Width > 0 && rect.Height > 0)
+                        {
+                            if (mark.Filled) g.FillEllipse(brush, rect);
+                            else g.DrawEllipse(pen, rect);
+                        }
                         break;
                     case Tool.Line:
                         g.DrawLine(pen, mark.Start, mark.End);
@@ -745,19 +1357,33 @@ namespace ChachaCapture
                         break;
                     case Tool.Pen:
                     case Tool.Highlight:
+                    case Tool.Polyline:
                         if (mark.Points.Count > 1)
                         {
                             using (GraphicsPath path = new GraphicsPath())
                             {
-                                path.AddLines(mark.Points.ToArray());
+                                List<PointF> points = new List<PointF>(mark.Points);
+                                if (mark.Tool == Tool.Polyline && DistanceSquared(points[points.Count - 1], mark.End) > 0.01F) points.Add(mark.End);
+                                path.AddLines(points.ToArray());
                                 g.DrawPath(pen, path);
                             }
                         }
-                        else if (mark.Points.Count == 1) g.FillEllipse(brush, mark.Start.X - width / 2, mark.Start.Y - width / 2, width, width);
+                        else if (mark.Points.Count == 1)
+                        {
+                            if (mark.Tool == Tool.Polyline && DistanceSquared(mark.Start, mark.End) > 0.01F) g.DrawLine(pen, mark.Start, mark.End);
+                            else g.FillEllipse(brush, mark.Start.X - width / 2, mark.Start.Y - width / 2, width, width);
+                        }
                         break;
                     case Tool.Text:
-                        using (Font font = new Font("Malgun Gothic", mark.TextSize, FontStyle.Bold, GraphicsUnit.Pixel))
-                            g.DrawString(mark.Text, font, brush, mark.Start);
+                        GraphicsState textState = g.Save();
+                        if (Math.Abs(mark.Rotation) > 0.01F)
+                        {
+                            SizeF size = MeasureMarkText(mark);
+                            PointF center = new PointF(mark.Start.X + size.Width / 2, mark.Start.Y + size.Height / 2);
+                            g.TranslateTransform(center.X, center.Y); g.RotateTransform(mark.Rotation); g.TranslateTransform(-center.X, -center.Y);
+                        }
+                        using (Font font = new Font(mark.FontFamily, mark.TextSize, mark.FontStyle, GraphicsUnit.Pixel)) g.DrawString(mark.Text, font, brush, mark.Start);
+                        g.Restore(textState);
                         break;
                     case Tool.Number:
                         float radius = Math.Max(16, mark.TextSize * 0.7F);
@@ -890,7 +1516,7 @@ namespace ChachaCapture
             }
         }
 
-        private string PromptText()
+        private string PromptText(string existing)
         {
             using (Form dialog = new Form())
             using (TextBox input = new TextBox())
@@ -916,6 +1542,7 @@ namespace ChachaCapture
                 input.BorderStyle = BorderStyle.FixedSingle;
                 input.Font = inputFont;
                 input.MaxLength = 10000;
+                input.Text = existing ?? "";
                 Button ok = MakeButton("넣기", 92, 34);
                 ok.Location = new Point(319, 188);
                 ok.DialogResult = DialogResult.OK;
@@ -934,18 +1561,21 @@ namespace ChachaCapture
 
         private void CopyImage()
         {
+            FinishPolyline();
             CancelGesture();
             try
             {
-                Clipboard.SetImage(_rendered);
+                ClipboardImages.Copy(_rendered);
                 NotifyCommitted();
                 SetStatus("클립보드에 복사했습니다 · " + _rendered.Width + " × " + _rendered.Height + " px");
+                if (HasFloatingBars) CloseInline();
             }
             catch (Exception ex) { ShowActionError("이미지 복사", ex); }
         }
 
         private void SaveImage()
         {
+            FinishPolyline();
             CancelGesture();
             using (SaveFileDialog dialog = new SaveFileDialog())
             {
@@ -999,6 +1629,7 @@ namespace ChachaCapture
                     }
                     NotifyCommitted();
                     SetStatus("저장 완료 · " + dialog.FileName);
+                    if (IsInline) CloseInline();
                 }
                 catch (Exception ex) { ShowActionError("이미지 저장", ex); }
             }
@@ -1006,6 +1637,7 @@ namespace ChachaCapture
 
         private void PinImage()
         {
+            FinishPolyline();
             CancelGesture();
             try
             {
@@ -1015,8 +1647,67 @@ namespace ChachaCapture
                 try { handler(image); } catch { image.Dispose(); throw; }
                 NotifyCommitted();
                 SetStatus("이미지를 화면 위에 고정했습니다 · 고정 창은 드래그로 이동할 수 있습니다");
+                if (HasFloatingBars) CloseInline();
             }
             catch (Exception ex) { ShowActionError("이미지 고정", ex); }
+        }
+
+        private void QuickSaveImage()
+        {
+            FinishPolyline(); CancelGesture();
+            try
+            {
+                string folder = !String.IsNullOrWhiteSpace(QuickSaveDirectory) ? QuickSaveDirectory : SaveDirectory;
+                if (String.IsNullOrWhiteSpace(folder)) folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Chacha");
+                folder = Path.GetFullPath(folder); Directory.CreateDirectory(folder);
+                string name = "Chacha_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+                string path = Path.Combine(folder, name + ".png");
+                int suffix = 1;
+                while (File.Exists(path)) path = Path.Combine(folder, name + "_" + suffix++ + ".png");
+                using (FileStream file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) _rendered.Save(file, ImageFormat.Png);
+                NotifyCommitted(); SetStatus("빠른 저장 완료 · " + path);
+                if (HasFloatingBars) CloseInline();
+            }
+            catch (Exception ex) { ShowActionError("빠른 저장", ex); }
+        }
+
+        private void PrintImage()
+        {
+            FinishPolyline(); CancelGesture();
+            try
+            {
+                using (Bitmap image = ExportImage())
+                using (PrintDocument document = new PrintDocument())
+                using (PrintDialog dialog = new PrintDialog())
+                {
+                    document.DocumentName = "Chacha Capture";
+                    document.DefaultPageSettings.Landscape = image.Width > image.Height;
+                    document.PrintPage += delegate(object sender, PrintPageEventArgs args)
+                    {
+                        Rectangle bounds = args.MarginBounds;
+                        float scale = Math.Min((float)bounds.Width / image.Width, (float)bounds.Height / image.Height);
+                        RectangleF target = new RectangleF(bounds.X + (bounds.Width - image.Width * scale) / 2, bounds.Y + (bounds.Height - image.Height * scale) / 2, image.Width * scale, image.Height * scale);
+                        args.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        args.Graphics.DrawImage(image, target); args.HasMorePages = false;
+                    };
+                    dialog.Document = document; dialog.UseEXDialog = true;
+                    if (dialog.ShowDialog(this) == DialogResult.OK) { document.Print(); SetStatus("이미지를 프린터로 보냈습니다"); }
+                }
+            }
+            catch (Exception ex) { ShowActionError("인쇄", ex); }
+        }
+
+        private void ClearEdits()
+        {
+            CancelGesture(); _selectedIndex = -1;
+            _state = _initialState.Snapshot(); _undo.Clear(); _redo.Clear(); TrimHistory(); UpdateRender(); FitImage();
+            SetStatus("모든 편집을 지웠습니다");
+        }
+
+        private void DeleteSelected()
+        {
+            if (_selectedIndex < 0 || _selectedIndex >= _state.Marks.Count) return;
+            PushUndo(); _state.Marks.RemoveAt(_selectedIndex); _selectedIndex = -1; UpdateRender();
         }
 
         private void NotifyCommitted()
@@ -1039,31 +1730,58 @@ namespace ChachaCapture
         {
             if (keyData == (Keys.Control | Keys.C)) { CopyImage(); return true; }
             if (keyData == (Keys.Control | Keys.S)) { SaveImage(); return true; }
-            if (keyData == (Keys.Control | Keys.P) || keyData == Keys.F3) { PinImage(); return true; }
+            if (keyData == (Keys.Control | Keys.Shift | Keys.S)) { QuickSaveImage(); return true; }
+            if (keyData == (Keys.Control | Keys.T) || keyData == Keys.F3) { PinImage(); return true; }
+            if (keyData == (Keys.Control | Keys.P)) { PrintImage(); return true; }
             if (keyData == (Keys.Control | Keys.Z)) { Undo(); return true; }
-            if (keyData == (Keys.Control | Keys.Y) || keyData == (Keys.Control | Keys.Shift | Keys.Z)) { Redo(); return true; }
+            if (keyData == (Keys.Control | Keys.Y)) { Redo(); return true; }
+            if (keyData == (Keys.Control | Keys.Shift | Keys.Z)) { ClearEdits(); return true; }
             if (keyData == (Keys.Control | Keys.D0) || keyData == (Keys.Control | Keys.NumPad0)) { FitImage(); return true; }
             if (keyData == (Keys.Control | Keys.D1) || keyData == (Keys.Control | Keys.NumPad1)) { ZoomAt(1F, new Point(_canvas.Width / 2, _canvas.Height / 2)); return true; }
             if (keyData == Keys.Escape)
             {
-                if (_drawing || _panning) CancelGesture();
+                if (WhiteboardMode) return true;
+                if (_drawing || _panning || _draft != null || _transformBefore != null) CancelGesture();
+                else if (IsPinEditing) CommitChanges();
+                else if (IsInline) CloseInline();
                 else SetTool(Tool.Move);
+                return true;
+            }
+            if (keyData == Keys.Enter)
+            {
+                if (_draft != null && _draft.Tool == Tool.Polyline) FinishPolyline();
+                else if (IsPinEditing) CommitChanges();
+                else if (IsInline) CopyImage();
+                else { _selectedIndex = -1; _canvas.Invalidate(); }
                 return true;
             }
             if (keyData == Keys.Space)
             {
+                if (IsPinEditing) { CommitChanges(); return true; }
+                if (!_spaceHeld) ToggleBars();
                 _spaceHeld = true;
-                UpdateCursor();
                 return true;
             }
             if (ActiveControl is NumericUpDown) return base.ProcessCmdKey(ref msg, keyData);
+            Keys code = keyData & Keys.KeyCode;
+            if (_selectedIndex >= 0 && (code == Keys.Left || code == Keys.Right || code == Keys.Up || code == Keys.Down))
+            {
+                int step = (keyData & Keys.Shift) != 0 ? 10 : 1;
+                Mark mark = _state.Marks[_selectedIndex].Clone();
+                RectangleF bounds = MarkBounds(mark);
+                RectangleF target = bounds;
+                target.Offset(code == Keys.Left ? -step : code == Keys.Right ? step : 0, code == Keys.Up ? -step : code == Keys.Down ? step : 0);
+                TransformMark(mark, bounds, target, false); PushUndo(); _state.Marks[_selectedIndex] = mark; UpdateRender(); return true;
+            }
             switch (keyData)
             {
+                case Keys.Delete: DeleteSelected(); return true;
                 case Keys.V: SetTool(Tool.Move); return true;
                 case Keys.R: SetTool(Tool.Rectangle); return true;
                 case Keys.E: SetTool(Tool.Ellipse); return true;
                 case Keys.A: SetTool(Tool.Arrow); return true;
                 case Keys.L: SetTool(Tool.Line); return true;
+                case Keys.P: SetTool(Tool.Polyline); return true;
                 case Keys.B: SetTool(Tool.Pen); return true;
                 case Keys.H: SetTool(Tool.Highlight); return true;
                 case Keys.T: SetTool(Tool.Text); return true;
@@ -1072,6 +1790,10 @@ namespace ChachaCapture
                 case Keys.U: SetTool(Tool.Blur); return true;
                 case Keys.C: SetTool(Tool.Crop); return true;
                 case Keys.X: SetTool(Tool.Eraser); return true;
+                case Keys.D1:
+                case Keys.OemOpenBrackets: _widthControl.Value = Math.Max(_widthControl.Minimum, _widthControl.Value - 1); return true;
+                case Keys.D2:
+                case Keys.OemCloseBrackets: _widthControl.Value = Math.Min(_widthControl.Maximum, _widthControl.Value + 1); return true;
                 case Keys.Add:
                 case Keys.Oemplus: ZoomAt(_zoom * 1.25F, new Point(_canvas.Width / 2, _canvas.Height / 2)); return true;
                 case Keys.Subtract:
@@ -1082,7 +1804,11 @@ namespace ChachaCapture
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.Space) { _spaceHeld = true; UpdateCursor(); e.Handled = true; }
+            if (e.KeyCode == Keys.Space)
+            {
+                if (IsPinEditing) { CommitChanges(); e.Handled = true; return; }
+                if (!_spaceHeld) ToggleBars(); _spaceHeld = true; e.Handled = true;
+            }
             base.OnKeyDown(e);
         }
 
@@ -1096,6 +1822,7 @@ namespace ChachaCapture
         {
             if (disposing)
             {
+                if (_desktop != null) { _desktop.Dispose(); _desktop = null; }
                 if (_rendered != null) { _rendered.Dispose(); _rendered = null; }
                 foreach (Bitmap image in _ownedImages) image.Dispose();
                 _ownedImages.Clear();

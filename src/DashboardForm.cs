@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -39,6 +39,7 @@ namespace ChachaCapture
             Label edition = Ui.Label("CAPTURE  /  PERSONAL", 8, Ui.Muted); edition.Location = new Point(145, 15); header.Controls.Add(edition);
             Button settings = Ui.Button("설정", false, delegate { app.ShowSettings(); }); settings.Width = 84; settings.Dock = DockStyle.Right; settings.Height = 34; header.Controls.Add(settings);
             Button pins = Ui.Button("고정 창 보기", false, delegate { app.ShowAllPins(); }); pins.Width = 112; pins.Dock = DockStyle.Right; header.Controls.Add(pins);
+            Button groups = Ui.Button("이미지 그룹", false, delegate { app.ShowGroups(); }); groups.Width = 112; groups.Dock = DockStyle.Right; header.Controls.Add(groups);
             root.Controls.Add(header, 0, 0);
 
             Panel hero = new HeroPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0), Padding = new Padding(24) };
@@ -47,14 +48,17 @@ namespace ChachaCapture
             Label subtitle = Ui.Label("필요한 부분만 캡처하고, 설명을 더하고, 작업 옆에 고정하세요.", 10, Ui.Muted); subtitle.Location = new Point(27, 101); hero.Controls.Add(subtitle);
             Button capture = Ui.Button("＋   새 영역 캡처", true, delegate { app.BeginCapture(0, false, false); }); capture.SetBounds(26, 142, 164, 39); hero.Controls.Add(capture);
             shortcutLabel = Ui.Label("", 9, Ui.Muted); shortcutLabel.Location = new Point(208, 153); hero.Controls.Add(shortcutLabel);
+            shortcutLabel.AutoSize = false; shortcutLabel.Height = 22; shortcutLabel.AutoEllipsis = true;
+            hero.Resize += delegate { shortcutLabel.Width = Math.Max(40, hero.ClientSize.Width - shortcutLabel.Left - 20); };
             root.Controls.Add(hero, 0, 1);
 
             FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 14, 0, 0), WrapContents = false };
-            Button paste = Ui.Button("클립보드 고정", false, delegate { app.PinClipboard(); }); paste.Width = 150; actions.Controls.Add(paste);
-            Button file = Ui.Button("이미지 열기", false, delegate { app.OpenImage(); }); file.Width = 132; actions.Controls.Add(file);
-            Button full = Ui.Button("전체 화면", false, delegate { app.BeginCapture(0, true, false); }); full.Width = 132; actions.Controls.Add(full);
-            Button delay = Ui.Button("3초 후 캡처", false, delegate { app.BeginCapture(3, false, false); }); delay.Width = 132; actions.Controls.Add(delay);
-            Button repeat = Ui.Button("최근 영역 재캡처", false, delegate { app.BeginCapture(0, false, true); }); repeat.Width = 168; actions.Controls.Add(repeat);
+            Button paste = Ui.Button("클립보드 고정", false, delegate { app.PinClipboard(); }); paste.Width = 140; actions.Controls.Add(paste);
+            Button file = Ui.Button("이미지 열기", false, delegate { app.OpenImage(); }); file.Width = 116; actions.Controls.Add(file);
+            Button full = Ui.Button("전체 화면", false, delegate { app.BeginCapture(0, true, false); }); full.Width = 112; actions.Controls.Add(full);
+            Button delay = Ui.Button("3초 후 캡처", false, delegate { app.BeginCapture(3, false, false); }); delay.Width = 118; actions.Controls.Add(delay);
+            Button repeat = Ui.Button("최근 영역 재캡처", false, delegate { app.BeginCapture(0, false, true); }); repeat.Width = 156; actions.Controls.Add(repeat);
+            Button whiteboard = Ui.Button("화이트보드", false, delegate { app.Whiteboard(Color.White); }); whiteboard.Width = 112; actions.Controls.Add(whiteboard);
             root.Controls.Add(actions, 0, 2);
 
             TableLayoutPanel library = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 16, 0, 0) };
@@ -158,57 +162,250 @@ namespace ChachaCapture
     public sealed class SettingsForm : Form
     {
         private readonly CaptureApplication app;
-        private readonly TextBox capture, pin, toggle, folder;
-        private readonly CheckBox cursor, restore, keep, tray;
-        private readonly NumericUpDown limit;
+        private readonly TabControl tabs;
+        private readonly TextBox capture, pin, toggle, clickThrough, switchGroup, folder, quickFolder;
+        private readonly CheckBox cursor, detect, abort, restore, keep, tray, startup, autoSave, preferHtml, pasteFilePaths;
+        private readonly NumericUpDown limit, closedLimit;
+        private readonly Label validation;
+
         public SettingsForm(CaptureApplication controller)
         {
-            app = controller; AppSettings s = app.Store.Settings;
+            app = controller;
+            AppSettings s = app.Store.Settings, defaults = new AppSettings();
             SuspendLayout();
-            Text = "Chacha Capture · 설정"; Icon = Ui.CreateIcon(); BackColor = Ui.Background; ForeColor = Ui.Text; Font = Ui.Font(10, FontStyle.Regular);
-            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; StartPosition = FormStartPosition.CenterParent; AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(610, 590);
-            Label title = Ui.Label("내 작업 방식에 맞게", 19, Ui.Text); title.Font = Ui.Font(19, FontStyle.Bold); title.Location = new Point(26, 23); Controls.Add(title);
-            Label desc = Ui.Label("설정과 캡처 기록은 이 PC의 사용자 폴더에 저장됩니다.", 9, Ui.Muted); desc.Location = new Point(28, 66); Controls.Add(desc);
-            capture = Field("영역 캡처", s.CaptureHotkey, 111);
-            pin = Field("클립보드 고정", s.PinHotkey, 155);
-            toggle = Field("모든 고정 창 숨기기 / 표시", s.ToggleHotkey, 199);
-            Label example = Ui.Label("예: F1, F3, Ctrl+Shift+A  ·  다른 앱이 사용 중이면 안내합니다.", 9, Ui.Muted); example.Location = new Point(28, 245); Controls.Add(example);
-            cursor = Check("마우스 커서 포함", s.IncludeCursor, 281);
-            restore = Check("다음 실행 시 고정 이미지 복원", s.RestorePins, 315);
-            keep = Check("캡처 기록 저장", s.KeepHistory, 349);
-            tray = Check("시작할 때 대시보드 숨기기", s.StartInTray, 383);
-            limit = new NumericUpDown { Minimum = 1, Maximum = 200, Value = s.HistoryLimit, Location = new Point(415, 349), Width = 80, BackColor = Ui.Surface, ForeColor = Ui.Text };
-            Controls.Add(limit); Label unit = Ui.Label("개 보관", 9, Ui.Muted); unit.Location = new Point(505, 354); Controls.Add(unit);
-            folder = Field("기본 저장 폴더", s.SaveFolder, 432); folder.Width = 287;
-            Button browse = Ui.Button("…", false, delegate { using (FolderBrowserDialog dlg = new FolderBrowserDialog()) { dlg.SelectedPath = folder.Text; if (dlg.ShowDialog(this) == DialogResult.OK) folder.Text = dlg.SelectedPath; } }); browse.SetBounds(531, 430, 44, 32); Controls.Add(browse);
-            Button save = Ui.Button("설정 저장", true, Save); save.SetBounds(425, 516, 150, 42); Controls.Add(save);
-            Button cancel = Ui.Button("취소", false, delegate { Close(); }); cancel.SetBounds(313, 516, 100, 42); Controls.Add(cancel); CancelButton = cancel; AcceptButton = save;
-            Label version = Ui.Label("v1.0.0 · Windows x64", 9, Ui.Muted); version.Location = new Point(28, 528); Controls.Add(version);
+            Text = "Chacha Capture · 설정";
+            Icon = Ui.CreateIcon(); BackColor = Ui.Background; ForeColor = Ui.Text; Font = Ui.Font(10, FontStyle.Regular);
+            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterParent;
+            AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(760, 620);
+
+            Label title = Ui.Label("내 작업 방식에 맞게", 19, Ui.Text);
+            title.Font = Ui.Font(19, FontStyle.Bold); title.Location = new Point(25, 21); Controls.Add(title);
+            Label description = Ui.Label("캡처, 고정, 저장 동작을 한곳에서 조정하세요.", 9, Ui.Muted);
+            description.Location = new Point(28, 67); Controls.Add(description);
+
+            tabs = new TabControl { Location = new Point(24, 105), Size = new Size(712, 423),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+                DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed, ItemSize = new Size(173, 36),
+                Padding = new Point(12, 7), Font = Ui.Font(10, FontStyle.Bold), AccessibleName = "설정 범주" };
+            tabs.DrawItem += DrawTab;
+            Controls.Add(tabs);
+            TabPage shortcutsPage = Page("단축키");
+            TabPage capturePage = Page("캡처");
+            TabPage storagePage = Page("저장 · 기록");
+            TabPage pastePage = Page("고정 · 시작");
+
+            capture = ShortcutField(shortcutsPage, "영역 캡처", ValidHotkey(s.CaptureHotkey, defaults.CaptureHotkey), 25);
+            pin = ShortcutField(shortcutsPage, "클립보드 고정", ValidHotkey(s.PinHotkey, defaults.PinHotkey), 77);
+            toggle = ShortcutField(shortcutsPage, "모든 고정 창 숨기기 / 표시", ValidHotkey(s.ToggleHotkey, defaults.ToggleHotkey), 129);
+            clickThrough = ShortcutField(shortcutsPage, "모든 고정 창 클릭 통과 전환", ValidHotkey(s.ClickThroughHotkey, defaults.ClickThroughHotkey), 181);
+            switchGroup = ShortcutField(shortcutsPage, "다음 이미지 그룹으로 전환", ValidHotkey(s.SwitchGroupHotkey, defaults.SwitchGroupHotkey), 233);
+            Note(shortcutsPage, "예: F1, F3, Shift+F3, Ctrl+Alt+A\n각 동작에 서로 다른 키를 지정하세요. 다른 앱과 충돌하면 저장 후 안내합니다.", 27, 295, 645, 52);
+
+            cursor = Check(capturePage, "처음부터 마우스 커서 포함", s.IncludeCursor, 28);
+            Note(capturePage, "캡처 중 ` 키로 마우스 커서를 표시하거나 숨길 수 있습니다.", 47, 59, 620, 35);
+            detect = Check(capturePage, "버튼과 입력란 등 화면 요소 자동 감지", s.AutoDetectElements, 114);
+            Note(capturePage, "Tab 키로 창 선택과 요소 선택을 전환하고, 휠로 선택 범위를 조절합니다.", 47, 146, 620, 37);
+            abort = Check(capturePage, "다른 앱으로 전환하면 캡처 취소", s.AbortOnFocusLoss, 203);
+            Note(capturePage, "캡처를 유지한 채 다른 앱을 이용하려면 이 옵션을 끄세요.", 47, 235, 620, 36);
+            Note(capturePage, "Enter 복사  ·  Ctrl+T 화면에 고정  ·  Alt 확대경  ·  Esc 취소", 27, 314, 650, 32);
+
+            keep = Check(storagePage, "캡처 기록 보관", s.KeepHistory, 26);
+            limit = Number(storagePage, Math.Max(1, Math.Min(200, s.HistoryLimit)), 1, 200, 470, 23);
+            Note(storagePage, "개", 560, 30, 45, 24);
+            Note(storagePage, "기록을 끄면 이후 캡처를 기록에 추가하지 않습니다. 기존 기록은 유지됩니다.", 47, 63, 622, 36);
+            folder = FolderField(storagePage, "기본 저장 폴더", SafeFolder(s.SaveFolder, defaults.SaveFolder), 117);
+            quickFolder = FolderField(storagePage, "빠른 저장 폴더", SafeFolder(s.QuickSaveFolder, defaults.QuickSaveFolder), 183);
+            autoSave = Check(storagePage, "캡처와 편집 결과를 빠른 저장 폴더에 자동 저장", s.AutoSave, 259);
+            Note(storagePage, "자동 저장과 별개로 Ctrl+Shift+S를 누르면 즉시 PNG 파일을 저장합니다.", 47, 293, 620, 40);
+            keep.CheckedChanged += delegate { limit.Enabled = keep.Checked; };
+            limit.Enabled = keep.Checked;
+
+            restore = Check(pastePage, "다음 실행 시 고정 이미지와 그룹 복원", s.RestorePins, 25);
+            Label closedText = Ui.Label("다시 불러올 수 있는 닫힌 고정 이미지", 10, Ui.Text);
+            closedText.Location = new Point(27, 82); pastePage.Controls.Add(closedText);
+            closedLimit = Number(pastePage, Math.Max(0, Math.Min(200, s.ClosedPinLimit)), 0, 200, 470, 78);
+            Note(pastePage, "개", 560, 86, 45, 24);
+            Note(pastePage, "0개로 설정하면 닫힌 고정 이미지를 보관하지 않습니다.", 47, 116, 620, 29);
+            preferHtml = Check(pastePage, "클립보드에 HTML과 텍스트가 있으면 HTML 우선", s.PreferHtml, 168);
+            pasteFilePaths = Check(pastePage, "이미지로 열 수 없는 파일은 경로를 텍스트로 고정", s.PasteFilePaths, 226);
+            tray = Check(pastePage, "앱을 시작할 때 대시보드 대신 트레이에서 시작", s.StartInTray, 284);
+            startup = Check(pastePage, "Windows에 로그인할 때 Chacha Capture 자동 실행", s.RunAtStartup, 333);
+
+            validation = Ui.Label("", 9, Color.FromArgb(255, 179, 150));
+            validation.AutoSize = false; validation.SetBounds(27, 536, 705, 26); validation.AutoEllipsis = true; Controls.Add(validation);
+            Label version = Ui.Label("v1.1.0 · Windows x64", 9, Ui.Muted); version.Location = new Point(27, 577); Controls.Add(version);
+            Button save = Ui.Button("설정 저장", true, Save); save.SetBounds(584, 567, 150, 38); Controls.Add(save);
+            Button cancel = Ui.Button("취소", false, delegate { Close(); }); cancel.SetBounds(475, 567, 99, 38); Controls.Add(cancel);
+            CancelButton = cancel; AcceptButton = save;
             ResumeLayout(true);
         }
-        private TextBox Field(string label, string value, int y)
+
+        private TabPage Page(string title)
         {
-            Label l = Ui.Label(label, 10, Ui.Text); l.Location = new Point(28, y + 4); Controls.Add(l);
-            TextBox text = new TextBox { Text = value, Location = new Point(232, y), Width = 343, BackColor = Ui.Surface, ForeColor = Ui.Text, BorderStyle = BorderStyle.FixedSingle, Font = Ui.Font(11, FontStyle.Regular) }; Controls.Add(text); return text;
+            TabPage page = new TabPage(title) { BackColor = Ui.Background, ForeColor = Ui.Text,
+                UseVisualStyleBackColor = false, AutoScroll = true, Padding = new Padding(0),
+                Font = Ui.Font(10, FontStyle.Regular) };
+            tabs.TabPages.Add(page);
+            return page;
         }
-        private CheckBox Check(string text, bool value, int y) { CheckBox c = new CheckBox { Text = text, Checked = value, Location = new Point(28, y), AutoSize = true, ForeColor = Ui.Text }; Controls.Add(c); return c; }
+
+        private void DrawTab(object sender, DrawItemEventArgs e)
+        {
+            bool selected = e.Index == tabs.SelectedIndex;
+            Rectangle bounds = e.Bounds;
+            using (Brush brush = new SolidBrush(selected ? Ui.Surface : Ui.Background)) e.Graphics.FillRectangle(brush, bounds);
+            if (selected)
+                using (Brush accent = new SolidBrush(Ui.Accent)) e.Graphics.FillRectangle(accent, bounds.Left + 9, bounds.Bottom - 3, bounds.Width - 18, 3);
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, tabs.Font, bounds,
+                selected ? Ui.Accent : Ui.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
+        }
+
+        private TextBox ShortcutField(Control parent, string label, string value, int y)
+        {
+            Label caption = Ui.Label(label, 10, Ui.Text); caption.Location = new Point(27, y + 7); parent.Controls.Add(caption);
+            TextBox field = new TextBox { Text = value, Location = new Point(338, y), Width = 326,
+                BackColor = Ui.Surface, ForeColor = Ui.Text, BorderStyle = BorderStyle.FixedSingle,
+                Font = Ui.Font(11, FontStyle.Regular), AccessibleName = label, MaxLength = 80 };
+            parent.Controls.Add(field);
+            return field;
+        }
+
+        private TextBox FolderField(Control parent, string label, string value, int y)
+        {
+            Label caption = Ui.Label(label, 10, Ui.Text); caption.Location = new Point(27, y + 7); parent.Controls.Add(caption);
+            TextBox field = new TextBox { Text = value, Location = new Point(182, y), Width = 430,
+                BackColor = Ui.Surface, ForeColor = Ui.Text, BorderStyle = BorderStyle.FixedSingle,
+                Font = Ui.Font(10, FontStyle.Regular), AccessibleName = label };
+            parent.Controls.Add(field);
+            Button browse = Ui.Button("…", false, delegate
+            {
+                using (FolderBrowserDialog dialog = new FolderBrowserDialog { Description = label + " 선택", ShowNewFolderButton = true })
+                {
+                    if (Directory.Exists(field.Text)) dialog.SelectedPath = field.Text;
+                    if (dialog.ShowDialog(this) == DialogResult.OK) field.Text = dialog.SelectedPath;
+                }
+            });
+            browse.SetBounds(622, y - 1, 42, 31); browse.AccessibleName = label + " 찾아보기"; parent.Controls.Add(browse);
+            return field;
+        }
+
+        private static CheckBox Check(Control parent, string text, bool value, int y)
+        {
+            CheckBox check = new CheckBox { Text = text, Checked = value, Location = new Point(27, y),
+                AutoSize = true, ForeColor = Ui.Text, BackColor = Ui.Background, UseVisualStyleBackColor = false };
+            parent.Controls.Add(check); return check;
+        }
+
+        private static NumericUpDown Number(Control parent, int value, int minimum, int maximum, int x, int y)
+        {
+            NumericUpDown number = new NumericUpDown { Minimum = minimum, Maximum = maximum, Value = value,
+                Location = new Point(x, y), Width = 78, BackColor = Ui.Surface, ForeColor = Ui.Text,
+                BorderStyle = BorderStyle.FixedSingle, TextAlign = HorizontalAlignment.Center };
+            parent.Controls.Add(number); return number;
+        }
+
+        private static void Note(Control parent, string text, int x, int y, int width, int height)
+        {
+            Label note = Ui.Label(text, 9, Ui.Muted); note.AutoSize = false;
+            note.SetBounds(x, y, width, height); parent.Controls.Add(note);
+        }
+
+        private static string ValidHotkey(string value, string fallback)
+        {
+            uint modifiers, key;
+            return HotkeyWindow.Parse(value, out modifiers, out key) ? value : fallback;
+        }
+
+        private static string SafeFolder(string value, string fallback)
+        {
+            try { return String.IsNullOrWhiteSpace(value) ? fallback : Path.GetFullPath(value); }
+            catch (ArgumentException) { return fallback; }
+            catch (NotSupportedException) { return fallback; }
+            catch (PathTooLongException) { return fallback; }
+        }
+
+        private bool ShowValidation(string message, int page, Control focus)
+        {
+            validation.Text = message; tabs.SelectedIndex = page;
+            if (focus != null) focus.Focus();
+            return false;
+        }
+
+        private bool ValidateFolder(TextBox field, string label, out string fullPath)
+        {
+            fullPath = null;
+            try
+            {
+                if (String.IsNullOrWhiteSpace(field.Text)) return ShowValidation(label + "를 입력해 주세요.", 2, field);
+                fullPath = Path.GetFullPath(field.Text.Trim());
+                Directory.CreateDirectory(fullPath);
+                return true;
+            }
+            catch (Exception e)
+            {
+                if (!(e is IOException || e is UnauthorizedAccessException || e is ArgumentException || e is NotSupportedException || e is System.Security.SecurityException)) throw;
+                return ShowValidation(label + "를 사용할 수 없습니다: " + e.Message, 2, field);
+            }
+        }
+
         private void Save(object sender, EventArgs e)
         {
-            string[] hotkeys = { capture.Text.Trim(), pin.Text.Trim(), toggle.Text.Trim() };
-            uint m, k;
+            validation.Text = "";
+            TextBox[] fields = { capture, pin, toggle, clickThrough, switchGroup };
+            string[] keys = fields.Select(f => f.Text.Trim()).ToArray();
+            uint modifiers, key;
             System.Collections.Generic.HashSet<string> seen = new System.Collections.Generic.HashSet<string>();
-            foreach (string key in hotkeys)
+            for (int i = 0; i < keys.Length; i++)
             {
-                if (!HotkeyWindow.Parse(key, out m, out k)) { MessageBox.Show(this, "단축키 형식을 확인해 주세요: " + key); return; }
-                if (!seen.Add(m + ":" + k)) { MessageBox.Show(this, "각 동작에 서로 다른 단축키를 지정해 주세요."); return; }
+                if (!HotkeyWindow.Parse(keys[i], out modifiers, out key))
+                {
+                    ShowValidation("단축키 형식을 확인해 주세요: " + fields[i].AccessibleName, 0, fields[i]); return;
+                }
+                if (!seen.Add(modifiers + ":" + key))
+                {
+                    ShowValidation("각 동작에 서로 다른 단축키를 지정해 주세요.", 0, fields[i]); return;
+                }
             }
-            try { string full = Path.GetFullPath(folder.Text.Trim()); Directory.CreateDirectory(full); folder.Text = full; }
-            catch (Exception ex) { MessageBox.Show(this, "저장 폴더를 사용할 수 없습니다.\n" + ex.Message); return; }
-            AppSettings s = app.Store.Settings;
-            s.CaptureHotkey = hotkeys[0]; s.PinHotkey = hotkeys[1]; s.ToggleHotkey = hotkeys[2];
-            s.IncludeCursor = cursor.Checked; s.RestorePins = restore.Checked; s.KeepHistory = keep.Checked; s.StartInTray = tray.Checked; s.HistoryLimit = (int)limit.Value; s.SaveFolder = folder.Text;
-            app.ApplySettings(); Close();
+            string savePath, quickPath;
+            if (!ValidateFolder(folder, "기본 저장 폴더", out savePath) || !ValidateFolder(quickFolder, "빠른 저장 폴더", out quickPath)) return;
+            AppSettings previous = app.Store.Settings;
+            AppSettings next = new AppSettings
+            {
+                CaptureHotkey = keys[0], PinHotkey = keys[1], ToggleHotkey = keys[2], ClickThroughHotkey = keys[3], SwitchGroupHotkey = keys[4],
+                IncludeCursor = cursor.Checked, AutoDetectElements = detect.Checked, AbortOnFocusLoss = abort.Checked,
+                RestorePins = restore.Checked, KeepHistory = keep.Checked, StartInTray = tray.Checked,
+                AutoSave = autoSave.Checked, PreferHtml = preferHtml.Checked, PasteFilePaths = pasteFilePaths.Checked,
+                HistoryLimit = (int)limit.Value, ClosedPinLimit = (int)closedLimit.Value,
+                SaveFolder = savePath, QuickSaveFolder = quickPath,
+                RunAtStartup = startup.Checked, ActiveGroup = previous.ActiveGroup, SettingsVersion = previous.SettingsVersion,
+                LastSelection = previous.LastSelection
+            };
+            bool startupApplied = false;
+            try
+            {
+                app.SetRunAtStartup(startup.Checked);
+                startupApplied = true;
+                app.Store.Settings = next;
+                app.ApplySettings();
+                DialogResult = DialogResult.OK; Close();
+            }
+            catch (Exception error)
+            {
+                app.Store.Settings = previous;
+                if (startupApplied)
+                {
+                    try { app.SetRunAtStartup(previous.RunAtStartup); }
+                    catch (Exception rollbackError)
+                    {
+                        ShowValidation("설정 저장에 실패했고 자동 실행 설정도 복원하지 못했습니다: " + rollbackError.Message, 3, startup);
+                        return;
+                    }
+                }
+                ShowValidation("설정을 저장하지 못했습니다: " + error.Message, tabs.SelectedIndex, null);
+            }
         }
     }
 }

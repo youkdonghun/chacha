@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Globalization;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 
@@ -63,7 +64,19 @@ namespace ChachaCapture
     {
         public string CaptureHotkey = "F1";
         public string PinHotkey = "F3";
-        public string ToggleHotkey = "Ctrl+F3";
+        public string ToggleHotkey = "Shift+F3";
+        public string ClickThroughHotkey = "Ctrl+Alt+F3";
+        public string SwitchGroupHotkey = "Ctrl+Shift+F3";
+        public int SettingsVersion = 2;
+        public bool PreferHtml = true;
+        public bool PasteFilePaths = true;
+        public bool AutoDetectElements = true;
+        public bool AbortOnFocusLoss = true;
+        public bool AutoSave;
+        public bool RunAtStartup;
+        public int ClosedPinLimit = 1;
+        public string ActiveGroup = "default";
+        public string QuickSaveFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Chacha Capture");
         public bool IncludeCursor;
         public bool RestorePins = true;
         public bool KeepHistory = true;
@@ -82,6 +95,27 @@ namespace ChachaCapture
         public double ScaleFactor;
         public bool Visible = true;
         public bool TopMost = true;
+        public string GroupId = "default";
+        public string SourceText;
+        public bool ClosedByUser;
+        public bool HasAnimation;
+        public string AnimationTransform;
+        public int AnimationFrame;
+        public bool AnimationPlaying = true;
+        public double AnimationSpeed = 1;
+    }
+
+    public sealed class ImageGroup
+    {
+        public string Id;
+        public string Name;
+        public override string ToString() { return Name; }
+    }
+
+    public sealed class CaptureRecord
+    {
+        public string File;
+        public Rectangle ScreenBounds;
     }
 
     public sealed class Storage
@@ -90,23 +124,38 @@ namespace ChachaCapture
         public string HistoryDirectory { get { return Path.Combine(Root, "history"); } }
         public string PinsDirectory { get { return Path.Combine(Root, "pins"); } }
         public AppSettings Settings;
+        public List<ImageGroup> Groups;
         public Storage(string root)
         {
             Root = root; Directory.CreateDirectory(Root); Directory.CreateDirectory(HistoryDirectory); Directory.CreateDirectory(PinsDirectory);
             Settings = ReadXml<AppSettings>(Path.Combine(Root, "settings.xml")) ?? new AppSettings();
             Settings.HistoryLimit = Math.Max(1, Math.Min(200, Settings.HistoryLimit));
+            Settings.ClosedPinLimit = Math.Max(0, Math.Min(100, Settings.ClosedPinLimit));
             if (String.IsNullOrWhiteSpace(Settings.SaveFolder)) Settings.SaveFolder = new AppSettings().SaveFolder;
+            if (String.IsNullOrWhiteSpace(Settings.QuickSaveFolder)) Settings.QuickSaveFolder = Settings.SaveFolder;
+            // v1 shipped a different hide shortcut; migrate its default, retaining user-defined shortcuts.
+            string settingsPath = Path.Combine(Root, "settings.xml");
+            if (File.Exists(settingsPath) && !File.ReadAllText(settingsPath).Contains("<SettingsVersion>")) { if (Settings.ToggleHotkey == "Ctrl+F3") Settings.ToggleHotkey = "Shift+F3"; }
+            Groups = ReadXml<List<ImageGroup>>(Path.Combine(Root, "groups.xml")) ?? new List<ImageGroup>();
+            Groups = Groups.Where(g => g != null && !String.IsNullOrWhiteSpace(g.Id) && !String.IsNullOrWhiteSpace(g.Name)).GroupBy(g => g.Id).Select(g => g.First()).ToList();
+            if (!Groups.Any(g => g.Id == "default")) Groups.Insert(0, new ImageGroup { Id = "default", Name = "기본 그룹" });
+            if (!Groups.Any(g => g.Id == Settings.ActiveGroup)) Settings.ActiveGroup = "default";
         }
         public void SaveSettings() { WriteXml(Path.Combine(Root, "settings.xml"), Settings); }
+        public void SaveGroups() { WriteXml(Path.Combine(Root, "groups.xml"), Groups); SaveSettings(); }
         public string[] History() { return Directory.GetFiles(HistoryDirectory, "*.png").OrderByDescending(Path.GetFileName).ToArray(); }
         public string AddHistory(Bitmap image)
+        { return AddHistory(image, Rectangle.Empty); }
+        public string AddHistory(Bitmap image, Rectangle screenBounds)
         {
             if (!Settings.KeepHistory) return null;
             string path = Path.Combine(HistoryDirectory, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".png");
             image.Save(path, ImageFormat.Png);
-            foreach (string older in History().Skip(Settings.HistoryLimit)) { try { File.Delete(older); } catch (IOException) { } }
+            WriteXml(path + ".xml", new CaptureRecord { File = Path.GetFileName(path), ScreenBounds = screenBounds });
+            foreach (string older in History().Skip(Settings.HistoryLimit)) { try { File.Delete(older); File.Delete(older + ".xml"); } catch (IOException) { } }
             return path;
         }
+        public Rectangle HistoryBounds(string path) { CaptureRecord record = ReadXml<CaptureRecord>(path + ".xml"); return record == null ? Rectangle.Empty : record.ScreenBounds; }
         public List<PinRecord> ReadPins() { return ReadXml<List<PinRecord>>(Path.Combine(Root, "pins.xml")) ?? new List<PinRecord>(); }
         public void WritePins(List<PinRecord> pins) { WriteXml(Path.Combine(Root, "pins.xml"), pins); }
         public string PinPath(string id)
@@ -117,6 +166,7 @@ namespace ChachaCapture
         }
         public static Bitmap LoadBitmap(string path)
         {
+            if (Path.GetExtension(path).Equals(".tga", StringComparison.OrdinalIgnoreCase)) return TgaImage.Load(path);
             using (Image image = Image.FromFile(path)) return new Bitmap(image);
         }
         public static void WriteXml<T>(string path, T value)
@@ -135,7 +185,15 @@ namespace ChachaCapture
 
     public static class ClipboardImages
     {
-        public static void Copy(Bitmap image) { Clipboard.SetDataObject(image, true, 8, 70); }
+        public static void Copy(Bitmap image)
+        {
+            using (MemoryStream png = new MemoryStream())
+            {
+                image.Save(png, ImageFormat.Png); png.Position = 0;
+                DataObject data = new DataObject(); data.SetData("PNG", false, png); data.SetData(DataFormats.Bitmap, true, image);
+                Clipboard.SetDataObject(data, true, 8, 70);
+            }
+        }
         public static Bitmap Read()
         {
             for (int attempt = 0; attempt < 5; attempt++)
@@ -193,12 +251,22 @@ namespace ChachaCapture
         public static bool TryColor(string text, out Color color)
         {
             color = Color.Empty;
+            text = (text ?? "").Trim();
+            if (text.StartsWith("rgb(", StringComparison.OrdinalIgnoreCase)) { if (!text.EndsWith(")")) return false; text = text.Substring(4, text.Length - 5).Trim(); }
+            else if (text.Contains("(") || text.Contains(")")) return false;
             if (Regex.IsMatch(text, "^#([a-fA-F0-9]{3}|[a-fA-F0-9]{6})$"))
             {
                 color = ColorTranslator.FromHtml(text); return true;
             }
-            Match m = Regex.Match(text, @"^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$", RegexOptions.IgnoreCase);
-            if (!m.Success) return false;
+            Match m = Regex.Match(text, @"^(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})$", RegexOptions.IgnoreCase);
+            if (!m.Success)
+            {
+                m = Regex.Match(text, @"^([01]?\.\d+|[01])[\s,]+([01]?\.\d+|[01])[\s,]+([01]?\.\d+|[01])$", RegexOptions.IgnoreCase);
+                if (!m.Success) return false;
+                double red = Double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), green = Double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture), blue = Double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+                if (red > 1 || green > 1 || blue > 1) return false;
+                color = Color.FromArgb((int)Math.Round(red * 255), (int)Math.Round(green * 255), (int)Math.Round(blue * 255)); return true;
+            }
             int r = Int32.Parse(m.Groups[1].Value), g = Int32.Parse(m.Groups[2].Value), b = Int32.Parse(m.Groups[3].Value);
             if (r > 255 || g > 255 || b > 255) return false;
             color = Color.FromArgb(r, g, b); return true;
@@ -208,12 +276,25 @@ namespace ChachaCapture
     public sealed class HotkeyWindow : NativeWindow, IDisposable
     {
         public event Action<int> Pressed;
+        public event Action<string[]> CommandReceived;
         private readonly List<int> registered = new List<int>();
         public HotkeyWindow() { CreateHandle(new CreateParams { Caption = "ChachaCapture.Hotkeys", Parent = new IntPtr(-3) }); }
         public static bool ShowExisting()
         {
             IntPtr window = FindWindowEx(new IntPtr(-3), IntPtr.Zero, null, "ChachaCapture.Hotkeys");
             return window != IntPtr.Zero && PostMessage(window, 0x8001, IntPtr.Zero, IntPtr.Zero);
+        }
+        [StructLayout(LayoutKind.Sequential)] private struct CopyData { public IntPtr Tag; public int Length; public IntPtr Data; }
+        public static bool SendCommand(string[] args)
+        {
+            IntPtr window = FindWindowEx(new IntPtr(-3), IntPtr.Zero, null, "ChachaCapture.Hotkeys");
+            if (window == IntPtr.Zero) return false;
+            if (args.Length == 0) return ShowExisting();
+            string content = String.Join("\n", args.Select(a => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(a))).ToArray());
+            if (content.Length > 16000) return false;
+            IntPtr data = Marshal.StringToHGlobalUni(content);
+            try { CopyData payload = new CopyData { Tag = new IntPtr(0x43484341), Length = (content.Length + 1) * 2, Data = data }; IntPtr result; return SendMessageTimeout(window, 0x4A, IntPtr.Zero, ref payload, 2, 2000, out result) != IntPtr.Zero; }
+            finally { Marshal.FreeHGlobal(data); }
         }
         public static bool Parse(string text, out uint modifiers, out uint key)
         {
@@ -238,7 +319,7 @@ namespace ChachaCapture
         {
             Unregister();
             List<string> errors = new List<string>();
-            string[] values = { s.CaptureHotkey, s.PinHotkey, s.ToggleHotkey };
+            string[] values = { s.CaptureHotkey, s.PinHotkey, s.ToggleHotkey, s.ClickThroughHotkey, s.SwitchGroupHotkey };
             for (int i = 0; i < values.Length; i++)
             {
                 uint modifiers, key;
@@ -248,11 +329,26 @@ namespace ChachaCapture
             return String.Join(", ", errors.ToArray());
         }
         private void Unregister() { foreach (int id in registered) UnregisterHotKey(Handle, id); registered.Clear(); }
-        protected override void WndProc(ref Message m) { if (Pressed != null) { if (m.Msg == 0x312) Pressed(m.WParam.ToInt32()); else if (m.Msg == 0x8001) Pressed(0); } base.WndProc(ref m); }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x4A && CommandReceived != null)
+            {
+                CopyData payload = (CopyData)Marshal.PtrToStructure(m.LParam, typeof(CopyData));
+                if (payload.Tag == new IntPtr(0x43484341) && payload.Length > 0 && payload.Length <= 32002 && payload.Data != IntPtr.Zero)
+                {
+                    string command = Marshal.PtrToStringUni(payload.Data, payload.Length / 2).TrimEnd('\0');
+                    try { CommandReceived(command.Split('\n').Select(a => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(a))).ToArray()); m.Result = new IntPtr(1); }
+                    catch (FormatException) { m.Result = IntPtr.Zero; }
+                    return;
+                }
+            }
+            if (Pressed != null) { if (m.Msg == 0x312) Pressed(m.WParam.ToInt32()); else if (m.Msg == 0x8001) Pressed(0); } base.WndProc(ref m);
+        }
         public void Dispose() { Unregister(); DestroyHandle(); }
         [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint key);
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
         [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, int message, IntPtr wParam, ref CopyData lParam, uint flags, uint timeout, out IntPtr result);
     }
 }
