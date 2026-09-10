@@ -63,7 +63,7 @@ namespace ChachaCapture
             Label intro = Ui.Label("새 버전을 확인하고, 이 창에서 다운로드와 설치를 진행하세요.", 10, Ui.Muted);
             intro.Location = new Point(28, 73); Controls.Add(intro);
 
-            Panel card = new Panel { BackColor = Ui.Surface, Location = new Point(28, 118), Size = new Size(612, 123) };
+            Panel card = new RoundedPanel { BackColor = Ui.Surface, Location = new Point(28, 118), Size = new Size(612, 123) };
             Controls.Add(card);
             stateLabel = Ui.Label("업데이트", 9, Ui.Accent); stateLabel.Font = Ui.Font(9, FontStyle.Bold);
             stateLabel.SetBounds(19, 14, 176, 22); stateLabel.AutoSize = false; card.Controls.Add(stateLabel);
@@ -88,12 +88,14 @@ namespace ChachaCapture
                 TextAlign = ContentAlignment.TopRight, LinkColor = Ui.Accent, ActiveLinkColor = Ui.Text, VisitedLinkColor = Ui.Accent,
                 BackColor = Ui.Background, Font = Ui.Font(9, FontStyle.Regular), AccessibleName = "GitHub 릴리스 페이지 열기" };
             releaseLink.LinkClicked += delegate { OpenReleasePage(); }; Controls.Add(releaseLink);
+            RoundedPanel notesCard = new RoundedPanel { Location = new Point(28, 342), Size = new Size(612, 117), Padding = new Padding(14, 10, 10, 10), CornerRadius = 14 };
+            Controls.Add(notesCard);
             notes = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
-                Location = new Point(28, 342), Size = new Size(612, 117), BackColor = Ui.Surface, ForeColor = Ui.Text,
-                BorderStyle = BorderStyle.FixedSingle, Font = Ui.Font(9, FontStyle.Regular),
+                Dock = DockStyle.Fill, BackColor = Ui.Surface, ForeColor = Ui.Text,
+                BorderStyle = BorderStyle.None, Font = Ui.Font(9, FontStyle.Regular),
                 Text = "확인이 끝나면 최신 버전의 변경 사항이 여기에 표시됩니다.",
                 AccessibleName = "릴리스 노트", TabStop = true };
-            Controls.Add(notes);
+            notesCard.Controls.Add(notes);
 
             checkButton = Ui.Button("다시 확인", false, async delegate { await CheckForUpdatesAsync(); });
             checkButton.SetBounds(28, 483, 132, 42); Controls.Add(checkButton);

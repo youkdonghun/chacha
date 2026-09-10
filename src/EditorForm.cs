@@ -107,19 +107,6 @@ namespace ChachaCapture
             }
         }
 
-        private sealed class DarkButton : Button
-        {
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                base.OnPaint(e);
-                if (!Enabled)
-                {
-                    using (SolidBrush fill = new SolidBrush(BackColor)) e.Graphics.FillRectangle(fill, 1, 1, Math.Max(0, Width - 2), Math.Max(0, Height - 2));
-                    TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Color.FromArgb(121, 132, 151), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
-                }
-            }
-        }
-
         private readonly Color _background = Color.FromArgb(22, 25, 32);
         private readonly Color _surface = Color.FromArgb(31, 35, 45);
         private readonly Color _text = Color.FromArgb(228, 232, 241);
@@ -414,7 +401,7 @@ namespace ChachaCapture
 
         private Button MakeButton(string label, int width, int height)
         {
-            Button button = new DarkButton { Text = label, Width = width, Height = height, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(43, 49, 63), ForeColor = _text, Margin = new Padding(3, 1, 3, 1), Cursor = Cursors.Hand, TabStop = false };
+            Button button = new RoundedButton { Text = label, Width = width, Height = height, CornerRadius = 8, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(43, 49, 63), ForeColor = _text, Margin = new Padding(3, 1, 3, 1), Cursor = Cursors.Hand, TabStop = false };
             button.FlatAppearance.BorderColor = Color.FromArgb(57, 64, 81);
             button.FlatAppearance.BorderSize = 1;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(60, 69, 91);

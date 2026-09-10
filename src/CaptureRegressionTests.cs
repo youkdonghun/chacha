@@ -38,6 +38,40 @@ namespace ChachaCapture
                 Invoke(box, "OnGotFocus", EventArgs.Empty);
                 Press(box, Keys.F9); Press(box, Keys.Escape); Assert(box.Hotkey == "", "Escape must also restore an empty binding.");
             }
+            using (HotkeyCaptureBox box = new HotkeyCaptureBox())
+            {
+                // The native hook runs before the OS updates modifier state. Feed its
+                // actual left/right key transitions rather than a preassembled chord.
+                Keys data;
+                Assert(!box.TranslateKeyboardInput(Keys.LControlKey, true, out data) && data == (Keys.Control | Keys.LControlKey), "Left Ctrl was not tracked before asynchronous state update.");
+                Assert(!box.TranslateKeyboardInput(Keys.RShiftKey, true, out data) && (data & Keys.Modifiers) == (Keys.Control | Keys.Shift), "Right Shift was not added to the chord.");
+                Assert(box.TranslateKeyboardInput(Keys.F1, true, out data) && data == (Keys.Control | Keys.Shift | Keys.F1), "Registered F1 could not be captured before normal window dispatch.");
+                Press(box, data);
+                Assert(box.Hotkey == "Ctrl+Shift+F1", "Native recorded chord did not reach the stored value.");
+                Assert(box.TranslateKeyboardInput(Keys.F1, false, out data), "Captured key-up leaked into the focused TextBox.");
+                box.TranslateKeyboardInput(Keys.LControlKey, false, out data);
+                box.TranslateKeyboardInput(Keys.RShiftKey, false, out data);
+                Assert(box.TranslateKeyboardInput(Keys.F3, true, out data) && data == Keys.F3, "Released modifiers remained stuck on the next shortcut.");
+                box.TranslateKeyboardInput(Keys.F3, false, out data);
+                box.TranslateKeyboardInput(Keys.LControlKey, true, out data);
+                box.TranslateKeyboardInput(Keys.RControlKey, true, out data);
+                box.TranslateKeyboardInput(Keys.LControlKey, false, out data);
+                Assert(box.TranslateKeyboardInput(Keys.K, true, out data) && data == (Keys.Control | Keys.K), "Releasing left Ctrl cleared a still-held right Ctrl.");
+                box.TranslateKeyboardInput(Keys.K, false, out data);
+                box.TranslateKeyboardInput(Keys.RControlKey, false, out data);
+                Assert(!box.TranslateKeyboardInput(Keys.Tab, true, out data), "The hook swallowed navigation Tab.");
+                box.TranslateKeyboardInput(Keys.Tab, false, out data);
+                box.TranslateKeyboardInput(Keys.LShiftKey, true, out data);
+                Assert(!box.TranslateKeyboardInput(Keys.Tab, true, out data), "The hook swallowed navigation Shift+Tab.");
+                box.TranslateKeyboardInput(Keys.Tab, false, out data);
+                box.TranslateKeyboardInput(Keys.LShiftKey, false, out data);
+                Assert(!box.TranslateKeyboardInput(Keys.LWin, true, out data), "The recorder swallowed the Windows key.");
+                Assert(!box.TranslateKeyboardInput(Keys.E, true, out data), "The recorder swallowed a Windows system shortcut.");
+                box.TranslateKeyboardInput(Keys.E, false, out data);
+                box.TranslateKeyboardInput(Keys.LWin, false, out data);
+                Assert(box.TranslateKeyboardInput(Keys.Enter, true, out data), "Enter was routed to dialog Save instead of recording.");
+                box.TranslateKeyboardInput(Keys.Enter, false, out data);
+            }
             for (int code = 0; code <= 255; code++) for (int mask = 0; mask < 8; mask++)
             {
                 Keys chord = (Keys)code | ((mask & 1) != 0 ? Keys.Control : 0) | ((mask & 2) != 0 ? Keys.Alt : 0) | ((mask & 4) != 0 ? Keys.Shift : 0);
@@ -68,6 +102,30 @@ namespace ChachaCapture
                 Assert(calls == 0, "Queued global shortcut fired during recording.");
                 Assert(window.Register(new AppSettings()) == "" && window.IsSuspended, "Saving settings resumed global shortcuts too early.");
                 Assert(window.Resume(empty) == "" && !window.IsSuspended, "Optional bindings did not resume cleanly.");
+            }
+            string error;
+            Assert(HotkeyWindow.CheckAvailability("", out error) && error == "", "Cleared shortcuts were treated as unavailable.");
+            Assert(!HotkeyWindow.CheckAvailability("Ctrl+F12", out error) && error.Contains("F12"), "Windows reserved F12 was reported as ready to apply.");
+            foreach (string invalid in new[] { "LControlKey", "RControlKey", "LShiftKey", "RShiftKey", "LMenu", "RMenu", "LWin", "RWin" })
+            {
+                uint modifiers, key;
+                Assert(!HotkeyWindow.Parse(invalid, out modifiers, out key), "Modifier-only input was accepted as a global shortcut: " + invalid);
+            }
+            using (HotkeyWindow owner = new HotkeyWindow())
+            {
+                string candidate = null;
+                for (int key = (int)Keys.F13; key <= (int)Keys.F24; key++)
+                {
+                    string value = "Ctrl+Alt+Shift+" + ((Keys)key).ToString();
+                    if (!HotkeyWindow.CheckAvailability(value, out error)) continue;
+                    AppSettings reservation = new AppSettings { CaptureHotkey = value, PinHotkey = "", ToggleHotkey = "", ClickThroughHotkey = "", SwitchGroupHotkey = "" };
+                    if (owner.Register(reservation) == "") { candidate = value; break; }
+                }
+                Assert(candidate != null, "No unclaimed shortcut was available for registration conflict regression.");
+                Assert(!HotkeyWindow.CheckAvailability(candidate, out error) && error.Contains(candidate), "Already registered shortcut was reported as available.");
+                owner.Suspend();
+                Assert(HotkeyWindow.CheckAvailability(candidate, out error), "The availability probe leaked its temporary registration.");
+                Assert(HotkeyWindow.CheckAvailability(candidate, out error), "A second availability probe could not reuse the released shortcut.");
             }
         }
         internal static void Pixels()

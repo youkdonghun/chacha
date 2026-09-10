@@ -83,27 +83,30 @@ namespace ChachaCapture
         {
             app = controller; SuspendLayout();
             Text = "Chacha · 이미지 그룹"; Icon = Ui.CreateIcon(); Font = Ui.Font(10, FontStyle.Regular); BackColor = Ui.Background; ForeColor = Ui.Text;
-            AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi; ClientSize = new Size(890, 590); MinimumSize = new Size(790, 520); StartPosition = FormStartPosition.CenterParent;
-            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(18) };
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 215)); root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 102)); Controls.Add(root);
-            Label title = Ui.Label("이미지 그룹", 19, Ui.Text); root.Controls.Add(title, 0, 0);
-            Label help = Ui.Label("그룹별로 작업 이미지를 보관하고 한 번에 전환하세요.", 10, Ui.Muted); help.Dock = DockStyle.Fill; help.TextAlign = ContentAlignment.MiddleLeft; root.Controls.Add(help, 1, 0);
-            groupList = new ListBox { Dock = DockStyle.Fill, BackColor = Ui.Surface, ForeColor = Ui.Text, BorderStyle = BorderStyle.None, ItemHeight = 32, IntegralHeight = false, DisplayMember = "Name" };
-            groupList.SelectedIndexChanged += delegate { if (!refreshing) RefreshImages(); }; root.Controls.Add(groupList, 0, 1);
+            AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi; ClientSize = new Size(960, 650); MinimumSize = new Size(890, 570); StartPosition = FormStartPosition.CenterParent;
+            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(24) };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 245)); root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 110)); Controls.Add(root);
+            Label title = Ui.Label("이미지 그룹", 19, Ui.Text); title.Font = Ui.Font(19, FontStyle.Bold); root.Controls.Add(title, 0, 0);
+            Label help = Ui.Label("작업마다 이미지를 모아 두고, 한 번에 꺼내 쓰세요.", 10, Ui.Muted); help.Dock = DockStyle.Fill; help.TextAlign = ContentAlignment.MiddleLeft; root.Controls.Add(help, 1, 0);
+            RoundedPanel groupsCard = new RoundedPanel { Dock = DockStyle.Fill, Padding = new Padding(10), Margin = new Padding(0, 0, 14, 0) }; root.Controls.Add(groupsCard, 0, 1);
+            groupList = new ListBox { Dock = DockStyle.Fill, BackColor = Ui.Surface, ForeColor = Ui.Text, BorderStyle = BorderStyle.None,
+                DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 46, IntegralHeight = false, DisplayMember = "Name", AccessibleName = "이미지 그룹 목록" };
+            groupList.DrawItem += DrawGroup;
+            groupList.SelectedIndexChanged += delegate { if (!refreshing) RefreshImages(); }; groupsCard.Controls.Add(groupList);
             thumbnails = new ImageList { ImageSize = new Size(96, 72), ColorDepth = ColorDepth.Depth32Bit };
             // Force native allocation before adding short-lived bitmaps: ImageList otherwise defers copying until first display.
             thumbnails.Handle.ToInt64();
             imageList = new ListView { Dock = DockStyle.Fill, View = View.LargeIcon, CheckBoxes = true, MultiSelect = true, BackColor = Ui.Surface, ForeColor = Ui.Text, LargeImageList = thumbnails, BorderStyle = BorderStyle.None, HideSelection = false };
             imageList.ItemCheck += delegate(object sender, ItemCheckEventArgs e) { if (!refreshing && e.Index < imageList.Items.Count) { PinForm pin = imageList.Items[e.Index].Tag as PinForm; if (pin != null && !pin.IsDisposed) pin.IsSelected = e.NewValue == CheckState.Checked; } };
             imageList.DoubleClick += delegate { foreach (ListViewItem item in imageList.SelectedItems) app.RestorePin(item.Tag as PinForm); };
-            root.Controls.Add(imageList, 1, 1);
+            RoundedPanel imagesCard = new RoundedPanel { Dock = DockStyle.Fill, Padding = new Padding(12), Margin = Padding.Empty }; imagesCard.Controls.Add(imageList); root.Controls.Add(imagesCard, 1, 1);
             FlowLayoutPanel left = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
-            AddButton(left, "새 그룹", 89, delegate { string name = Prompt("새 그룹 이름", ""); if (name != null) { app.CreateGroup(name); RefreshGroups(); } });
-            AddButton(left, "이름 변경", 89, delegate { ImageGroup group = SelectedGroup; if (group == null) return; string name = Prompt("그룹 이름 변경", group.Name); if (name != null) { group.Name = name; app.Store.SaveGroups(); RefreshGroups(); } });
-            AddButton(left, "그룹 해제", 195, delegate { ImageGroup group = SelectedGroup; if (group == null || group.Id == "default") return; app.RemoveGroup(group.Id); RefreshGroups(); }); root.Controls.Add(left, 0, 2);
+            AddButton(left, "새 그룹", 98, delegate { string name = Prompt("새 그룹 이름", ""); if (name != null) { app.CreateGroup(name); RefreshGroups(); } });
+            AddButton(left, "이름 변경", 98, delegate { ImageGroup group = SelectedGroup; if (group == null) return; string name = Prompt("그룹 이름 변경", group.Name); if (name != null) { group.Name = name; app.Store.SaveGroups(); RefreshGroups(); } });
+            AddButton(left, "그룹 해제", 206, delegate { ImageGroup group = SelectedGroup; if (group == null || group.Id == "default") return; app.RemoveGroup(group.Id); RefreshGroups(); }); root.Controls.Add(left, 0, 2);
             FlowLayoutPanel right = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
-            AddButton(right, "그룹 전환", 106, delegate { if (SelectedGroup != null) app.SwitchGroup(SelectedGroup.Id); });
+            AddButton(right, "그룹 전환", 106, delegate { if (SelectedGroup != null) { app.SwitchGroup(SelectedGroup.Id); groupList.Invalidate(); } });
             AddButton(right, "내보내기", 96, delegate { Export(); }); AddButton(right, "가져오기", 96, delegate { Import(); });
             AddButton(right, "선택 모두", 100, delegate { foreach (ListViewItem item in imageList.Items) item.Checked = true; });
             destination = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 195, DisplayMember = "Name", BackColor = Ui.Surface, ForeColor = Ui.Text, Margin = new Padding(0, 0, 8, 0) }; right.Controls.Add(destination);
@@ -111,6 +114,22 @@ namespace ChachaCapture
             RefreshGroups(); ResumeLayout(true);
         }
         private ImageGroup SelectedGroup { get { return groupList.SelectedItem as ImageGroup; } }
+        private void DrawGroup(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0 || e.Index >= groupList.Items.Count) return;
+            using (Brush background = new SolidBrush(Ui.Surface)) e.Graphics.FillRectangle(background, e.Bounds);
+            ImageGroup group = groupList.Items[e.Index] as ImageGroup;
+            if (group == null) return;
+            bool selected = (e.State & DrawItemState.Selected) != 0;
+            Rectangle bounds = Rectangle.Inflate(e.Bounds, -1, -3);
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (System.Drawing.Drawing2D.GraphicsPath shape = Theme.Round(bounds, 11 * e.Graphics.DpiX / 96f))
+            using (Brush fill = new SolidBrush(selected ? Color.FromArgb(43, 74, 70) : Ui.Surface)) e.Graphics.FillPath(fill, shape);
+            string label = group.Name + (group.Id == app.Store.Settings.ActiveGroup ? " · 사용 중" : "");
+            TextRenderer.DrawText(e.Graphics, label, groupList.Font, Rectangle.Inflate(bounds, -11, -2),
+                selected ? Ui.Accent : Ui.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            if ((e.State & DrawItemState.Focus) != 0) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(bounds, -4, -4), Ui.Accent, Ui.Surface);
+        }
         protected override void Dispose(bool disposing) { if (disposing && thumbnails != null) thumbnails.Dispose(); base.Dispose(disposing); }
         private void AddButton(Control panel, string text, int width, EventHandler click) { Button button = Ui.Button(text, false, click); button.Width = width; button.Height = 35; panel.Controls.Add(button); }
         private void RefreshGroups()
@@ -148,12 +167,15 @@ namespace ChachaCapture
         }
         public static string Prompt(string title, string initial)
         {
-            using (Form dialog = new Form { Text = title, ClientSize = new Size(390, 118), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, BackColor = Ui.Background, Font = Ui.Font(10, FontStyle.Regular) })
+            using (Form dialog = new Form { Text = title, ClientSize = new Size(410, 146), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, BackColor = Ui.Background, Font = Ui.Font(10, FontStyle.Regular) })
             {
-                TextBox field = new TextBox { Text = initial, MaxLength = 60, Location = new Point(18, 18), Width = 354, BackColor = Ui.Surface, ForeColor = Ui.Text };
-                Button ok = Ui.Button("확인", true, null); ok.SetBounds(272, 66, 100, 35); ok.DialogResult = DialogResult.OK; dialog.AcceptButton = ok;
-                Button cancel = Ui.Button("취소", false, null); cancel.SetBounds(164, 66, 100, 35); cancel.DialogResult = DialogResult.Cancel; dialog.CancelButton = cancel;
-                dialog.Controls.AddRange(new Control[] { field, ok, cancel }); return dialog.ShowDialog() == DialogResult.OK && !String.IsNullOrWhiteSpace(field.Text) ? field.Text.Trim() : null;
+                RoundedPanel input = new RoundedPanel { Location = new Point(20, 20), Size = new Size(370, 47), CornerRadius = 12 };
+                TextBox field = new TextBox { Text = initial, MaxLength = 60, Location = new Point(12, 12), Width = 346, BorderStyle = BorderStyle.None, BackColor = Ui.Surface, ForeColor = Ui.Text, AccessibleName = title };
+                input.Controls.Add(field);
+                Button ok = Ui.Button("확인", true, null); ok.SetBounds(282, 86, 108, 40); ok.DialogResult = DialogResult.OK; dialog.AcceptButton = ok;
+                Button cancel = Ui.Button("취소", false, null); cancel.SetBounds(164, 86, 108, 40); cancel.DialogResult = DialogResult.Cancel; dialog.CancelButton = cancel;
+                dialog.Controls.AddRange(new Control[] { input, ok, cancel }); dialog.Shown += delegate { field.Focus(); field.SelectAll(); };
+                return dialog.ShowDialog() == DialogResult.OK && !String.IsNullOrWhiteSpace(field.Text) ? field.Text.Trim() : null;
             }
         }
     }

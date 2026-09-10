@@ -27,10 +27,10 @@ Copy-Item -LiteralPath (Join-Path $taskRoot 'README.md') -Destination (Join-Path
 Copy-Item -LiteralPath (Join-Path $taskRoot 'LICENSE') -Destination (Join-Path $taskOutput 'LICENSE') -Force
 $taskDocs = Join-Path $taskOutput 'docs'
 New-Item -ItemType Directory -Force -Path $taskDocs | Out-Null
-Copy-Item -LiteralPath @((Join-Path $taskRoot 'docs\PARITY.md'), (Join-Path $taskRoot 'docs\VALIDATION.md'), (Join-Path $taskRoot 'docs\RELEASE-v1.2.0.md')) -Destination $taskDocs -Force
+Copy-Item -LiteralPath @((Join-Path $taskRoot 'docs\PARITY.md'), (Join-Path $taskRoot 'docs\VALIDATION.md'), (Join-Path $taskRoot 'docs\RELEASE-v1.3.0.md')) -Destination $taskDocs -Force
 $taskHash = (Get-FileHash -LiteralPath $taskExe -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath (Join-Path $taskOutput 'SHA256SUMS.txt') -Encoding Ascii -Value ($taskHash + '  ChachaCapture.exe')
-$taskArchive = Join-Path $taskOutput 'ChachaCapture-1.2.0-win-x64.zip'
+$taskArchive = Join-Path $taskOutput 'ChachaCapture-1.3.0-win-x64.zip'
 Compress-Archive -LiteralPath @($taskExe, (Join-Path $taskOutput 'README.md'), (Join-Path $taskOutput 'LICENSE'), (Join-Path $taskOutput 'SHA256SUMS.txt'), $taskDocs) -DestinationPath $taskArchive -Force
 Write-Output "Built Windows x64: $taskExe"
 Write-Output "Portable archive: $taskArchive"

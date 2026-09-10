@@ -9,6 +9,19 @@ using System.Threading;
 
 namespace ChachaCapture
 {
+    public enum DesktopCaptureMode { Automatic = 0, Compatibility = 1, Graphics = 2 }
+
+    public sealed class DesktopCaptureReport
+    {
+        public string Backend { get; internal set; }
+        public string Details { get; internal set; }
+        public string Notice { get; internal set; }
+        public bool UniformFrame { get; internal set; }
+        public bool ProtectedContentMasked { get; internal set; }
+        public bool EmbeddedCursor { get; internal set; }
+        internal readonly List<string> Events = new List<string>();
+    }
+
     /// <summary>Supported desktop capture APIs with explicit pixel ownership and opaque screen pixels.</summary>
     public static class DesktopCapture
     {
@@ -22,6 +35,7 @@ namespace ChachaCapture
         private static readonly Guid Texture2DId = new Guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
 
         public static string LastBackend { get; private set; }
+        public static DesktopCaptureReport LastReport { get; private set; }
 
         private sealed class Display
         {
@@ -30,70 +44,128 @@ namespace ChachaCapture
         }
 
         public static Bitmap Capture(out Rectangle bounds)
-        { return Capture(out bounds, true); }
+        { return Capture(out bounds, DesktopCaptureMode.Automatic); }
 
         public static Bitmap Capture(out Rectangle bounds, bool preferGpu)
+        { return Capture(out bounds, preferGpu ? DesktopCaptureMode.Graphics : DesktopCaptureMode.Compatibility); }
+
+        public static Bitmap Capture(out Rectangle bounds, DesktopCaptureMode mode)
         {
+            if (!Enum.IsDefined(typeof(DesktopCaptureMode), mode)) mode = DesktopCaptureMode.Automatic;
+            DesktopCaptureReport report = new DesktopCaptureReport();
+            LastReport = report; LastBackend = "";
+            Stopwatch elapsed = Stopwatch.StartNew();
             IntPtr previousDpi = EnterPhysicalCoordinates();
             try
             {
                 List<Display> displays = Displays(out bounds);
+                report.Events.Add("Mode=" + mode + "; displays=" + displays.Count + "; bounds=" + bounds);
                 FlushComposition();
-                Bitmap gpu;
-                if (preferGpu && TryDuplication(displays, bounds, out gpu)) return gpu;
-                Exception firstError;
-                try
+                foreach (DesktopCaptureMode backend in BackendOrder(mode))
                 {
-                    Bitmap result = CaptureGdi(displays, bounds, true);
-                    LastBackend = "GDI / 24-bit DIB / layered windows";
-                    return result;
+                    try
+                    {
+                        Bitmap result = backend == DesktopCaptureMode.Graphics ? CaptureDuplication(displays, bounds, report) : CaptureGdi(displays, bounds, true);
+                        try
+                        {
+                            LastBackend = backend == DesktopCaptureMode.Graphics ? "DXGI Desktop Duplication" : "GDI / 24-bit DIB / layered windows";
+                            report.Backend = LastBackend;
+                            report.UniformFrame = IsUniformFrame(result, displays, bounds);
+                            report.Notice = DescribeNotice(report);
+                            report.Events.Add("Result=" + LastBackend + "; uniform=" + report.UniformFrame + "; protected=" + report.ProtectedContentMasked + "; embeddedCursor=" + report.EmbeddedCursor);
+                            return result;
+                        }
+                        catch { result.Dispose(); throw; }
+                    }
+                    catch (Exception error)
+                    {
+                        if (!IsCaptureFailure(error)) throw;
+                        report.Events.Add(backend + ": " + DescribeFailure(error));
+                        // Do not use another backend to work around an explicit desktop access denial.
+                        if (IsAccessDenied(error) || mode != DesktopCaptureMode.Automatic)
+                            throw new InvalidOperationException(DescribeFailure(error), error);
+                    }
                 }
-                catch (Win32Exception error) { firstError = error; }
-                catch (ExternalException error) { firstError = error; }
-
-                if (!preferGpu && TryDuplication(displays, bounds, out gpu)) return gpu;
-
-                try
-                {
-                    Bitmap result = CaptureGdi(displays, bounds, false);
-                    LastBackend = "GDI / 24-bit DIB / compatible copy";
-                    return result;
-                }
-                catch (Win32Exception error)
-                {
-                    throw new InvalidOperationException("현재 바탕 화면을 캡처하지 못했습니다. 화면 구성이 바뀌었다면 다시 시도해 주세요. " +
-                        error.Message, firstError);
-                }
+                throw new InvalidOperationException("현재 화면을 캡처하지 못했습니다. 설정의 캡처 진단에서 사용한 방식과 오류를 확인해 주세요.");
             }
-            finally { LeavePhysicalCoordinates(previousDpi); }
+            finally
+            {
+                report.Events.Add("ElapsedMs=" + elapsed.ElapsedMilliseconds);
+                report.Details = String.Join(Environment.NewLine, report.Events.ToArray());
+                LeavePhysicalCoordinates(previousDpi);
+            }
         }
 
-        private static bool TryDuplication(IList<Display> displays, Rectangle bounds, out Bitmap result)
+        internal static DesktopCaptureMode[] BackendOrder(DesktopCaptureMode mode)
         {
-            result = null;
-            try { result = CaptureDuplication(displays, bounds); LastBackend = "DXGI Desktop Duplication"; return true; }
-            catch (COMException) { }
-            catch (Win32Exception) { }
-            catch (DllNotFoundException) { }
-            catch (EntryPointNotFoundException) { }
-            catch (NotSupportedException) { }
-            catch (InvalidOperationException) { }
-            return false;
+            if (mode == DesktopCaptureMode.Graphics) return new[] { DesktopCaptureMode.Graphics };
+            if (mode == DesktopCaptureMode.Compatibility) return new[] { DesktopCaptureMode.Compatibility };
+            return new[] { DesktopCaptureMode.Compatibility, DesktopCaptureMode.Graphics };
         }
 
         /// <summary>Explicit supported GPU backend, useful for diagnosing a display-driver capture problem.</summary>
         public static Bitmap CaptureDxgi(out Rectangle bounds)
+        { return Capture(out bounds, DesktopCaptureMode.Graphics); }
+
+        private static bool IsCaptureFailure(Exception error)
         {
-            IntPtr previousDpi = EnterPhysicalCoordinates();
+            return error is ExternalException || error is Win32Exception || error is DllNotFoundException ||
+                error is UnauthorizedAccessException || error.HResult == unchecked((int)0x80004002) ||
+                error is EntryPointNotFoundException || error is NotSupportedException || error is InvalidOperationException;
+        }
+
+        internal static bool IsAccessDenied(Exception error)
+        {
+            Win32Exception native = error as Win32Exception;
+            return (native != null && native.NativeErrorCode == 5) || error.HResult == unchecked((int)0x80070005);
+        }
+
+        internal static string DescribeFailure(Exception error)
+        {
+            Win32Exception native = error as Win32Exception;
+            string code = "0x" + error.HResult.ToString("X8") + (native == null ? "" : "; Win32=" + native.NativeErrorCode);
+            if (IsAccessDenied(error)) return "Windows가 현재 화면에 대한 접근을 허용하지 않았습니다. (" + code + ")";
+            if (error.HResult == unchecked((int)0x887A0022)) return "다른 캡처 앱이 GPU 캡처 연결을 사용 중입니다. 호환 캡처를 선택해 주세요. (" + code + ")";
+            if (error.HResult == unchecked((int)0x887A0026)) return "화면 구성이 변경되어 GPU 캡처 연결이 끊겼습니다. 다시 캡처해 주세요. (" + code + ")";
+            if (error.HResult == unchecked((int)0x887A0027)) return "GPU에서 새 화면을 받는 데 시간이 초과되었습니다. (" + code + ")";
+            if (error is DllNotFoundException || error is EntryPointNotFoundException || error is NotSupportedException || error.HResult == unchecked((int)0x80004002))
+                return "선택한 캡처 방식을 현재 Windows 또는 디스플레이에서 지원하지 않습니다. (" + code + ")";
+            return "화면을 읽지 못했습니다. (" + code + ")";
+        }
+
+        internal static string DescribeNotice(DesktopCaptureReport report)
+        {
+            if (report.ProtectedContentMasked) return "Windows가 일부 화면을 보호된 콘텐츠로 표시했습니다. 해당 영역은 캡처에 표시되지 않을 수 있습니다.";
+            if (report.UniformFrame) return "캡처한 화면이 단색입니다. 미리보기가 실제 화면과 다르면 설정에서 캡처 방식을 바꾸고 다시 시도해 주세요.";
+            if (report.EmbeddedCursor) return "현재 GPU가 마우스 포인터를 화면에 포함했습니다. 포인터를 빼려면 호환 캡처를 사용해 주세요.";
+            return "";
+        }
+
+        private static bool IsUniformFrame(Bitmap image, IList<Display> displays, Rectangle bounds)
+        {
+            foreach (Display display in displays)
+                if (!IsUniformRegion(image, new Rectangle(display.Bounds.X - bounds.X, display.Bounds.Y - bounds.Y, display.Bounds.Width, display.Bounds.Height))) return false;
+            return displays.Count > 0;
+        }
+
+        internal static bool IsUniformRegion(Bitmap image, Rectangle area)
+        {
+            if (image == null || area.Width < 1 || area.Height < 1 || !new Rectangle(Point.Empty, image.Size).Contains(area)) return false;
+            BitmapData data = image.LockBits(area, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
             try
             {
-                List<Display> displays = Displays(out bounds);
-                FlushComposition();
-                Bitmap result = CaptureDuplication(displays, bounds);
-                LastBackend = "DXGI Desktop Duplication";
-                return result;
+                byte[] row = new byte[checked(area.Width * 4)];
+                Marshal.Copy(data.Scan0, row, 0, row.Length);
+                byte blue = row[0], green = row[1], red = row[2];
+                for (int y = 0; y < area.Height; y++)
+                {
+                    if (y != 0) Marshal.Copy(new IntPtr(data.Scan0.ToInt64() + (long)y * data.Stride), row, 0, row.Length);
+                    for (int x = 0; x < row.Length; x += 4)
+                        if (row[x] != blue || row[x + 1] != green || row[x + 2] != red) return false;
+                }
+                return true;
             }
-            finally { LeavePhysicalCoordinates(previousDpi); }
+            finally { image.UnlockBits(data); }
         }
 
         /// <summary>Screen buffers are RGB data. Keep their RGB values even when a driver left alpha at zero.</summary>
@@ -209,7 +281,7 @@ namespace ChachaCapture
             catch { result.Dispose(); throw; }
         }
 
-        private static Bitmap CaptureDuplication(IList<Display> displays, Rectangle bounds)
+        private static Bitmap CaptureDuplication(IList<Display> displays, Rectangle bounds, DesktopCaptureReport report)
         {
             IntPtr factory = IntPtr.Zero;
             Bitmap result = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
@@ -246,7 +318,7 @@ namespace ChachaCapture
                                 foreach (Display candidate in displays)
                                     if (String.Equals(candidate.Name, description.DeviceName, StringComparison.OrdinalIgnoreCase)) { display = candidate; break; }
                                 if (display == null || captured.Contains(display.Name)) continue;
-                                using (Bitmap frame = CaptureOutput(output, device, context, description))
+                                using (Bitmap frame = CaptureOutput(output, device, context, description, report))
                                 {
                                     if (frame.Size != display.Bounds.Size) throw new InvalidOperationException("캡처 중 디스플레이 크기가 변경되었습니다.");
                                     using (Graphics graphics = Graphics.FromImage(result))
@@ -266,7 +338,7 @@ namespace ChachaCapture
             finally { Release(factory); }
         }
 
-        private static Bitmap CaptureOutput(IntPtr output, IntPtr device, IntPtr context, OutputDescription description)
+        private static Bitmap CaptureOutput(IntPtr output, IntPtr device, IntPtr context, OutputDescription description, DesktopCaptureReport report)
         {
             IntPtr output1 = IntPtr.Zero, duplication = IntPtr.Zero, resource = IntPtr.Zero, texture = IntPtr.Zero, staging = IntPtr.Zero;
             bool acquired = false, mapped = false;
@@ -280,10 +352,11 @@ namespace ChachaCapture
                 acquired = true;
                 Rectangle outputBounds = Rectangle.FromLTRB(description.Coordinates.Left, description.Coordinates.Top,
                     description.Coordinates.Right, description.Coordinates.Bottom);
-                // Some drivers bake a software cursor into the frame. GDI supplies the clean backdrop
-                // needed by our separate, toggleable cursor layer. Do not trust uninitialized pointer metadata.
-                if (info.ProtectedContentMaskedOut == 0 && HasEmbeddedCursor(info, outputBounds))
-                    return CaptureGdiRegion(outputBounds, true);
+                // A hardware/driver cursor must not silently replace a successful DXGI frame with
+                // a different backend. Keep the chosen pixels and let the caller avoid drawing it twice.
+                report.ProtectedContentMasked |= info.ProtectedContentMaskedOut != 0;
+                report.EmbeddedCursor |= HasEmbeddedCursor(info, outputBounds);
+                report.Events.Add("DXGI output=" + outputBounds + "; present=" + (info.LastPresentTime != 0) + "; protected=" + (info.ProtectedContentMaskedOut != 0));
                 Guid textureId = Texture2DId;
                 Check(Marshal.QueryInterface(resource, ref textureId, out texture));
                 TextureDescription textureDescription;
@@ -332,11 +405,11 @@ namespace ChachaCapture
             cursor.Size = Marshal.SizeOf(typeof(NativeCursorInfo));
             if (!GetCursorInfo(ref cursor)) return false;
             bool visible = (cursor.Flags & 1) != 0 && (cursor.Flags & 2) == 0 && cursor.Handle != IntPtr.Zero;
-            return NeedsCursorFreeFallback(info.LastMouseUpdateTime, info.PointerVisible != 0,
+            return HasEmbeddedCursorMetadata(info.LastMouseUpdateTime, info.PointerVisible != 0,
                 visible, new Point(cursor.X, cursor.Y), outputBounds);
         }
 
-        internal static bool NeedsCursorFreeFallback(long mouseUpdateTime, bool separatePointerVisible,
+        internal static bool HasEmbeddedCursorMetadata(long mouseUpdateTime, bool separatePointerVisible,
             bool systemCursorVisible, Point systemCursor, Rectangle outputBounds)
         {
             // DXGI_OUTDUPL_FRAME_INFO.PointerPosition is undefined when LastMouseUpdateTime is zero.

@@ -1091,10 +1091,11 @@ namespace ChachaCapture
 
             private Button ButtonAt(string text, int x, int width, string hint, EventHandler action)
             {
-                Button button = new Button { Text = text, Bounds = new Rectangle(x, 5, width, 26), FlatStyle = FlatStyle.Flat,
+                Button button = new RoundedButton { Text = text, Bounds = new Rectangle(x, 5, width, 26), CornerRadius = 8, FlatStyle = FlatStyle.Flat,
                     BackColor = Color.FromArgb(36, 47, 59), ForeColor = Color.White, Cursor = Cursors.Hand, TabStop = false,
                     Font = toolbarFont, UseVisualStyleBackColor = false };
                 button.FlatAppearance.BorderSize = 0;
+                button.FlatAppearance.BorderColor = Color.FromArgb(54, 72, 82);
                 button.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 76, 86);
                 button.Click += action;
                 tips.SetToolTip(button, hint);
@@ -1117,7 +1118,19 @@ namespace ChachaCapture
             protected override void OnPaint(PaintEventArgs e)
             {
                 base.OnPaint(e);
-                using (Pen border = new Pen(Color.FromArgb(62, 121, 108))) e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+                if (Width < 2 || Height < 2) return;
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (GraphicsPath shape = Theme.Round(new RectangleF(.5f, .5f, Width - 1, Height - 1), 11))
+                using (Pen border = new Pen(Color.FromArgb(62, 121, 108))) e.Graphics.DrawPath(border, shape);
+            }
+            protected override void OnResize(EventArgs e)
+            {
+                base.OnResize(e);
+                if (Width < 2 || Height < 2) return;
+                using (GraphicsPath shape = Theme.Round(new RectangleF(0, 0, Width, Height), 11))
+                {
+                    Region previous = Region; Region = new Region(shape); if (previous != null) previous.Dispose();
+                }
             }
             protected override void Dispose(bool disposingManaged)
             {

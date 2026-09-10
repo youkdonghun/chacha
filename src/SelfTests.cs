@@ -54,6 +54,7 @@ namespace ChachaCapture
                 Check(results, "Optional hotkeys, recording suspension and automatic floating migration", delegate { CaptureRegressionTests.OptionalSettings(Path.Combine(testRoot, "optional-hotkeys")); });
                 Check(results, "Opaque desktop pixels, padded RGB rows and negative stride", CaptureRegressionTests.Pixels);
                 Check(results, "DXGI baked cursor detection respects valid output metadata", DesktopCursorTests.Detection);
+                Check(results, "Capture backend selection, uniform frames and native failure diagnostics", DesktopCaptureTests.BackendSelectionAndDiagnostics);
                 Check(results, "Update UI cancellation, retries and installer failure keep the app safe", UpdateUiRegressionTests.Run);
                 Check(results, "Update release provenance, checksums, x64 format and installer paths (19 groups)", delegate { UpdateTests.Run(Path.Combine(testRoot, "updates")); });
                 Check(results, "Pin clone ownership, full-resolution transforms and native click-through", TestPin);

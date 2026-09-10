@@ -16,12 +16,13 @@ namespace ChachaCapture
 {
     public static class Ui
     {
-        public static readonly Color Background = Color.FromArgb(16, 21, 30);
-        public static readonly Color Surface = Color.FromArgb(25, 33, 45);
-        public static readonly Color Border = Color.FromArgb(43, 55, 71);
-        public static readonly Color Accent = Color.FromArgb(94, 234, 196);
-        public static readonly Color Muted = Color.FromArgb(148, 163, 184);
-        public static readonly Color Text = Color.FromArgb(236, 242, 248);
+        public static readonly Color Background = Color.FromArgb(23, 28, 38);
+        public static readonly Color Surface = Color.FromArgb(32, 39, 52);
+        public static readonly Color Border = Color.FromArgb(53, 64, 81);
+        public static readonly Color Accent = Color.FromArgb(130, 231, 200);
+        public static readonly Color Muted = Color.FromArgb(164, 177, 195);
+        public static readonly Color Text = Color.FromArgb(240, 244, 250);
+        public static string VersionLabel { get { return "v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3); } }
         public static Font Font(float size, FontStyle style) { return new Font("맑은 고딕", size, style); }
         public static Label Label(string text, float size, Color color)
         {
@@ -29,7 +30,7 @@ namespace ChachaCapture
         }
         public static Button Button(string text, bool primary, EventHandler clicked)
         {
-            Button b = new Button { Text = text, FlatStyle = FlatStyle.Flat, BackColor = primary ? Accent : Surface, ForeColor = primary ? Background : Text, Font = Font(10, FontStyle.Bold), Cursor = Cursors.Hand, Height = 42, Margin = new Padding(0, 0, 10, 10), UseVisualStyleBackColor = false };
+            Button b = new RoundedButton { Text = text, BackColor = primary ? Accent : Surface, ForeColor = primary ? Background : Text, Font = Font(10, FontStyle.Bold), Cursor = Cursors.Hand, Height = 42, Margin = new Padding(0, 0, 10, 10), UseVisualStyleBackColor = false };
             b.FlatAppearance.BorderColor = primary ? Accent : Border;
             b.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(131, 248, 215) : Border;
             if (clicked != null) b.Click += clicked;
@@ -75,6 +76,7 @@ namespace ChachaCapture
         public bool AutoSave;
         public bool AutoFloatCapture = true;
         public bool PreferGpuCapture = true;
+        public DesktopCaptureMode CaptureMode = DesktopCaptureMode.Automatic;
         public bool RunAtStartup;
         public int ClosedPinLimit = 1;
         public string ActiveGroup = "default";
@@ -287,6 +289,21 @@ namespace ChachaCapture
             IntPtr window = FindWindowEx(new IntPtr(-3), IntPtr.Zero, null, "ChachaCapture.Hotkeys");
             return window != IntPtr.Zero && PostMessage(window, 0x8001, IntPtr.Zero, IntPtr.Zero);
         }
+        public static string ExistingVersion()
+        {
+            try
+            {
+                IntPtr window = FindWindowEx(new IntPtr(-3), IntPtr.Zero, null, "ChachaCapture.Hotkeys");
+                uint processId;
+                if (window == IntPtr.Zero || GetWindowThreadProcessId(window, out processId) == 0) return null;
+                using (System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById((int)processId))
+                    return System.Diagnostics.FileVersionInfo.GetVersionInfo(process.MainModule.FileName).FileVersion;
+            }
+            catch (System.ComponentModel.Win32Exception) { return null; }
+            catch (IOException) { return null; }
+            catch (InvalidOperationException) { return null; }
+            catch (ArgumentException) { return null; }
+        }
         [StructLayout(LayoutKind.Sequential)] private struct CopyData { public IntPtr Tag; public int Length; public IntPtr Data; }
         public static bool SendCommand(string[] args)
         {
@@ -316,7 +333,32 @@ namespace ChachaCapture
                     key = (uint)parsed;
                 }
             }
-            return key != 0 && key != (uint)Keys.ControlKey && key != (uint)Keys.ShiftKey && key != (uint)Keys.Menu;
+            return key != 0 && key != (uint)Keys.ControlKey && key != (uint)Keys.ShiftKey && key != (uint)Keys.Menu &&
+                key != (uint)Keys.LControlKey && key != (uint)Keys.RControlKey &&
+                key != (uint)Keys.LShiftKey && key != (uint)Keys.RShiftKey &&
+                key != (uint)Keys.LMenu && key != (uint)Keys.RMenu &&
+                key != (uint)Keys.LWin && key != (uint)Keys.RWin;
+        }
+        public static bool CheckAvailability(string value, out string error)
+        {
+            error = String.Empty;
+            if (String.IsNullOrWhiteSpace(value)) return true;
+            uint modifiers, key;
+            if (!Parse(value, out modifiers, out key)) { error = "단축키를 다시 눌러 주세요: " + value; return false; }
+            if (key == (uint)Keys.F12) { error = "F12는 Windows 디버거 예약 키입니다. 다른 키를 눌러 주세요."; return false; }
+            NativeWindow probe = new NativeWindow();
+            bool registered = false;
+            try
+            {
+                probe.CreateHandle(new CreateParams { Caption = "ChachaCapture.ShortcutCheck", Parent = new IntPtr(-3) });
+                registered = RegisterHotKey(probe.Handle, 1, modifiers | 0x4000, key);
+                if (registered) return true;
+                int code = Marshal.GetLastWin32Error();
+                error = code == 1409 ? value + " 키를 다른 앱이 사용 중입니다. 다른 키를 지정하거나 지워 주세요." :
+                    value + " 키를 등록할 수 없습니다 (Windows 오류 " + code + "). 다른 키를 지정해 주세요.";
+                return false;
+            }
+            finally { if (registered) UnregisterHotKey(probe.Handle, 1); probe.DestroyHandle(); }
         }
         public string Register(AppSettings s)
         {
@@ -356,6 +398,7 @@ namespace ChachaCapture
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
         [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, int message, IntPtr wParam, ref CopyData lParam, uint flags, uint timeout, out IntPtr result);
     }
 }

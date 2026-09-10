@@ -21,6 +21,6 @@ jobs:
           retention-days: 7
           path: |
             dist/ChachaCapture.exe
-            dist/ChachaCapture-1.2.0-win-x64.zip
+            dist/ChachaCapture-1.3.0-win-x64.zip
             dist/SHA256SUMS.txt
             dist/self-test-results.json

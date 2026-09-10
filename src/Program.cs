@@ -26,7 +26,20 @@ namespace ChachaCapture
             bool first;
             using (Mutex mutex = new Mutex(true, "Local\\ChachaCapture-54FB3242", out first))
             {
-                if (!first) { if (!HotkeyWindow.SendCommand(args)) MessageBox.Show("Chacha Capture가 이미 실행 중입니다.\n트레이 아이콘에서 대시보드를 여세요.", "Chacha Capture", MessageBoxButtons.OK, MessageBoxIcon.Information); return 0; }
+                if (!first)
+                {
+                    string runningVersion = HotkeyWindow.ExistingVersion();
+                    Version oldVersion, newVersion;
+                    if (args.Length == 0 && Version.TryParse(runningVersion, out oldVersion) &&
+                        Version.TryParse(Application.ProductVersion, out newVersion) && oldVersion < newVersion)
+                    {
+                        HotkeyWindow.ShowExisting();
+                        MessageBox.Show("현재 실행 중인 버전은 v" + oldVersion.ToString(3) + "입니다.\n방금 연 파일은 v" + newVersion.ToString(3) + "입니다.\n\n기존 앱의 트레이 메뉴에서 종료한 뒤 새 파일을 다시 실행해 주세요.",
+                            "Chacha Capture · 이전 버전이 실행 중", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else if (!HotkeyWindow.SendCommand(args)) MessageBox.Show("Chacha Capture가 이미 실행 중입니다.\n트레이 아이콘에서 대시보드를 여세요.", "Chacha Capture", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return 0;
+                }
                 try
                 {
                     Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -86,6 +99,7 @@ namespace ChachaCapture
         private bool restoring;
         private bool movingPeers;
         private string hotkeyConflict;
+        public string CaptureDiagnosticText { get; private set; }
         private uint lastFileClipboardSequence;
         private bool hasPastedFiles;
         private readonly List<PinForm> closedPins = new List<PinForm>();
@@ -102,6 +116,7 @@ namespace ChachaCapture
             int profile = Array.IndexOf(args, "--data-dir");
             if (profile >= 0 && profile + 1 < args.Length) data = Path.GetFullPath(args[profile + 1]);
             Store = new Storage(data);
+            CaptureDiagnosticText = "아직 캡처하지 않았습니다. 한 번 캡처한 뒤 확인해 주세요.";
             icon = Ui.CreateIcon(); hotkeys = new HotkeyWindow();
             hotkeys.Pressed += delegate(int id) { if (id == 0) ShowDashboard(); else if (id == 1) BeginCapture(0, false, false); else if (id == 2) PinClipboard(); else if (id == 3) TogglePins(); else if (id == 4) ToggleClickThrough(); else if (id == 5) NextGroup(); };
             commandTimer = new System.Windows.Forms.Timer { Interval = 50 };
@@ -219,9 +234,10 @@ namespace ChachaCapture
                 try
                 {
                     Rectangle bounds; Bitmap cursor;
-                    using (Bitmap desktop = CaptureOverlay.CaptureDesktopLayers(out bounds, out cursor, Store.Settings.PreferGpuCapture))
+                    using (Bitmap desktop = CaptureOverlay.CaptureDesktopLayers(out bounds, out cursor, Store.Settings.CaptureMode))
                     using (cursor)
                     {
+                        UpdateCaptureDiagnostic();
                         if ((fullscreen || repeat || !requested.IsEmpty) && output != null)
                         {
                             Rectangle captureBounds = fullscreen ? bounds : Rectangle.Intersect(bounds, repeat ? Store.Settings.LastSelection : requested);
@@ -238,6 +254,7 @@ namespace ChachaCapture
                         overlay.CompleteOnSelection = output != null;
                         overlay.AutoDetectElements = Store.Settings.AutoDetectElements;
                         overlay.AutoFloatCapture = Store.Settings.AutoFloatCapture;
+                        overlay.CaptureNotice = DesktopCapture.LastReport == null ? "" : DesktopCapture.LastReport.Notice;
                         List<CaptureHistoryItem> history = new List<CaptureHistoryItem>();
                         try
                         {
@@ -264,9 +281,22 @@ namespace ChachaCapture
                     };
                     overlay.Show(); overlay.Activate();
                 }
-                catch (Exception e) { capturing = false; RestoreCaptureEditors(hiddenEditors, true); if (restoreDashboard) ShowDashboard(); Program.Report(e); }
+                catch (Exception e) { UpdateCaptureDiagnostic(); capturing = false; RestoreCaptureEditors(hiddenEditors, true); if (restoreDashboard) ShowDashboard(); Program.Report(e); }
             };
             captureTimer.Start();
+        }
+        private void UpdateCaptureDiagnostic()
+        {
+            DesktopCaptureReport report = DesktopCapture.LastReport;
+            if (report == null) return;
+            CaptureDiagnosticText = "Chacha Capture " + Application.ProductVersion + " · Windows x64" + Environment.NewLine +
+                "선택한 방식: " + Store.Settings.CaptureMode + Environment.NewLine +
+                "사용한 방식: " + (report.Backend ?? "실패") + Environment.NewLine +
+                (report.Notice ?? "") + Environment.NewLine + report.Details;
+            // Only API names, dimensions and errors are recorded, never captured image contents.
+            try { File.WriteAllText(Path.Combine(Store.Root, "capture-diagnostics.txt"), CaptureDiagnosticText); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
         private void RestoreCaptureEditors(List<EditorForm> hidden, bool canceled)
         {

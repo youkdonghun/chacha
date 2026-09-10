@@ -84,6 +84,7 @@ namespace ChachaCapture
 
         public bool AbortOnFocusLoss { get; set; }
         public bool AutoFloatCapture { get; set; }
+        public string CaptureNotice { get; set; }
         public bool AutoDetectElements
         {
             get { return _elementDetection; }
@@ -838,9 +839,14 @@ namespace ChachaCapture
         private void DrawToolbar(Graphics g)
         {
             Rectangle bar = GetToolbarBounds();
-            using (Brush background = new SolidBrush(Color.FromArgb(250, 24, 31, 42))) g.FillRectangle(background, bar);
-            using (Pen border = new Pen(Color.FromArgb(73, 85, 100)))
-                g.DrawRectangle(border, bar.X, bar.Y, bar.Width - 1, bar.Height - 1);
+            SmoothingMode smoothing = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath shape = Theme.Round(new RectangleF(bar.X + .5f, bar.Y + .5f, bar.Width - 1, bar.Height - 1), 14))
+            {
+                using (Brush background = new SolidBrush(Color.FromArgb(250, 24, 31, 42))) g.FillPath(background, shape);
+                using (Pen border = new Pen(Color.FromArgb(73, 85, 100))) g.DrawPath(border, shape);
+            }
+            g.SmoothingMode = smoothing;
             string[] descriptions = { "사각형", "타원", "화살표", "연결선", "펜 · B", "텍스트 · T", "모자이크", "흐리게",
                 "저장 Ctrl+S · Shift 클릭 빠른 저장", "다른 창 위에 띄워 두고 드래그·크기 조절 · Ctrl+T",
                 AutoFloatCapture ? "복사+플로팅 Enter · Ctrl+C · 더블클릭" : "복사 Enter · Ctrl+C · 더블클릭", "취소 Esc" };
@@ -852,7 +858,10 @@ namespace ChachaCapture
                 {
                     Color fill = i == _pressedButton ? Color.FromArgb(51, 106, 96) :
                         i == hover ? Color.FromArgb(49, 64, 77) : Color.FromArgb(31, 71, 66);
-                    using (Brush background = new SolidBrush(fill)) g.FillRectangle(background, button);
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    using (GraphicsPath shape = Theme.Round(button, 8))
+                    using (Brush background = new SolidBrush(fill)) g.FillPath(background, shape);
+                    g.SmoothingMode = smoothing;
                 }
                 DrawToolIcon(g, button, i, i == 10 ? _accent : Color.FromArgb(228, 236, 242));
                 if (i == 9)
@@ -993,11 +1002,19 @@ namespace ChachaCapture
             Rectangle monitor = GetMonitorBounds(_mousePoint);
             int width = Math.Min(620, monitor.Width - 24);
             if (width < 1) return;
-            Rectangle hint = new Rectangle(monitor.Left + (monitor.Width - width) / 2, monitor.Top + 24, width, 66);
+            bool noticeVisible = !String.IsNullOrEmpty(CaptureNotice);
+            Rectangle hint = new Rectangle(monitor.Left + (monitor.Width - width) / 2, monitor.Top + 24, width, noticeVisible ? 104 : 66);
             // Keep the hint away from the pointer and magnifier when selecting near the top edge.
             if (Math.Abs(_mousePoint.Y - hint.Top) < 100)
                 hint.Y = Math.Max(monitor.Top, monitor.Bottom - hint.Height - 24);
-            using (Brush fill = new SolidBrush(Color.FromArgb(237, 23, 30, 40))) g.FillRectangle(fill, hint);
+            SmoothingMode smoothing = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath shape = Theme.Round(new RectangleF(hint.X + .5f, hint.Y + .5f, hint.Width - 1, hint.Height - 1), 16))
+            {
+                using (Brush fill = new SolidBrush(Color.FromArgb(237, 23, 30, 40))) g.FillPath(fill, shape);
+                using (Pen border = new Pen(Color.FromArgb(73, 85, 100))) g.DrawPath(border, shape);
+            }
+            g.SmoothingMode = smoothing;
             Rectangle heading = new Rectangle(hint.X + 8, hint.Y + 9, hint.Width - 16, 24);
             TextRenderer.DrawText(g, "드래그하여 캡처 · 창을 클릭하여 선택", _boldFont, heading, Color.White,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
@@ -1007,6 +1024,9 @@ namespace ChachaCapture
             TextRenderer.DrawText(g, instruction, _normalFont, detail, _accent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
                 TextFormatFlags.NoPadding);
+            if (noticeVisible)
+                TextRenderer.DrawText(g, CaptureNotice, _smallFont, new Rectangle(hint.X + 14, hint.Y + 63, hint.Width - 28, 35),
+                    Color.FromArgb(255, 212, 153), TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
         }
 
         protected override void Dispose(bool disposing)
@@ -1037,16 +1057,20 @@ namespace ChachaCapture
 
         /// <summary>Returns a clean snapshot and a separately owned transparent cursor layer.</summary>
         public static Bitmap CaptureDesktopLayers(out Rectangle bounds, out Bitmap cursorLayer)
-        { return CaptureDesktopLayers(out bounds, out cursorLayer, true); }
+        { return CaptureDesktopLayers(out bounds, out cursorLayer, DesktopCaptureMode.Automatic); }
 
         public static Bitmap CaptureDesktopLayers(out Rectangle bounds, out Bitmap cursorLayer, bool preferGpu)
+        { return CaptureDesktopLayers(out bounds, out cursorLayer, preferGpu ? DesktopCaptureMode.Graphics : DesktopCaptureMode.Compatibility); }
+
+        public static Bitmap CaptureDesktopLayers(out Rectangle bounds, out Bitmap cursorLayer, DesktopCaptureMode mode)
         {
-            Bitmap image = DesktopCapture.Capture(out bounds, preferGpu);
+            Bitmap image = DesktopCapture.Capture(out bounds, mode);
             cursorLayer = null;
             try
             {
                 cursorLayer = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
-                DrawCursorLayer(cursorLayer, image, bounds);
+                if (DesktopCapture.LastReport == null || !DesktopCapture.LastReport.EmbeddedCursor)
+                    DrawCursorLayer(cursorLayer, image, bounds);
                 return image;
             }
             catch

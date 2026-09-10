@@ -90,10 +90,12 @@ internal static class DesktopIntegration
             {
                 fixture.Show(); fixture.Activate(); Pump(180);
                 Rectangle bounds;
-                using (Bitmap captured = DesktopCapture.Capture(out bounds, false))
+                using (Bitmap captured = DesktopCapture.Capture(out bounds, DesktopCaptureMode.Compatibility))
                 {
                     Point point = new Point(fixture.Left + 70 - bounds.Left, fixture.Top + 70 - bounds.Top);
                     Check(captured.GetPixel(point.X, point.Y).ToArgb() == fixture.BackColor.ToArgb(), "GDI did not capture the synthetic desktop color.");
+                    Check(DesktopCapture.LastReport != null && DesktopCapture.LastReport.Backend == DesktopCapture.LastBackend && DesktopCapture.LastBackend.StartsWith("GDI", StringComparison.Ordinal), "Compatibility capture reported a backend different from its pixels.");
+                    Check(DesktopCapture.LastReport.Details.Contains("Mode=Compatibility") && DesktopCapture.LastReport.Details.Contains("ElapsedMs="), "Capture diagnostics lost the selected mode or timing.");
                     notes.Add("Compatibility backend: " + DesktopCapture.LastBackend);
                 }
                 try
@@ -102,15 +104,35 @@ internal static class DesktopIntegration
                     {
                         Point point = new Point(fixture.Left + 70 - bounds.Left, fixture.Top + 70 - bounds.Top);
                         Check(gpu.GetPixel(point.X, point.Y).ToArgb() == fixture.BackColor.ToArgb(), "DXGI changed the synthetic desktop color.");
+                        Check(DesktopCapture.LastReport.Backend == "DXGI Desktop Duplication" && !DesktopCapture.LastReport.Details.Contains("GDI /"), "Explicit GPU capture silently replaced its frame with GDI.");
                         notes.Add("DXGI backend: passed");
                     }
                 }
                 catch (System.Runtime.InteropServices.COMException error) { notes.Add("DXGI unavailable: " + error.ErrorCode); }
+                catch (InvalidOperationException error)
+                {
+                    if (error.InnerException == null) throw;
+                    notes.Add("DXGI unavailable: " + error.Message + "; " + DesktopCapture.LastReport.Details);
+                }
+                foreach (Color solid in new[] { Color.White, Color.Black })
+                {
+                    fixture.BackColor = solid; fixture.Refresh(); Pump(100);
+                    using (Bitmap captured = DesktopCapture.Capture(out bounds, DesktopCaptureMode.Automatic))
+                    {
+                        Point point = new Point(fixture.Left + 70 - bounds.Left, fixture.Top + 70 - bounds.Top);
+                        Check(captured.GetPixel(point.X, point.Y).ToArgb() == solid.ToArgb(), "A legitimate solid desktop was discarded or changed.");
+                        Check(DesktopCapture.LastBackend.StartsWith("GDI", StringComparison.Ordinal) && DesktopCapture.LastReport.Details.Contains("Mode=Automatic"), "Automatic still capture did not retain successful compatible pixels.");
+                        Check(!DesktopCapture.LastReport.UniformFrame || DesktopCapture.LastReport.Notice.Contains("미리보기"), "A uniform desktop was not explained as a visual check.");
+                        notes.Add("Solid " + solid.Name + ": preserved; uniform=" + DesktopCapture.LastReport.UniformFrame);
+                    }
+                }
+                fixture.BackColor = Color.FromArgb(32, 80, 128); fixture.Refresh(); Pump(100);
                 app.Whiteboard(Color.White); Pump(100);
                 EditorForm whiteboard = ((List<EditorForm>)Field(app, "editors")).Last();
                 app.BeginCapture(0, false, false); Pump(800);
                 CaptureOverlay overlay = (CaptureOverlay)Field(app, "overlay");
                 Check(overlay != null && overlay.Visible, "Capture did not open over a whiteboard.");
+                Check(overlay.CaptureNotice == DesktopCapture.LastReport.Notice, "The overlay did not receive the capture diagnostics notice.");
                 notes.Add("Application backend: " + DesktopCapture.LastBackend);
                 Bitmap snapshot = (Bitmap)Field(overlay, "_desktop"); Rectangle desktopBounds = (Rectangle)Field(overlay, "_desktopBounds");
                 Check(snapshot.GetPixel(fixture.Left + 70 - desktopBounds.Left, fixture.Top + 70 - desktopBounds.Top).ToArgb() == fixture.BackColor.ToArgb(), "Whiteboard leaked into the desktop capture.");
