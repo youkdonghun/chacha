@@ -1,0 +1,23 @@
+name: Windows x64
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test portable executable
+        shell: powershell
+        run: ./build.ps1 -Test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChachaCapture-win-x64
+          path: |
+            dist/ChachaCapture.exe
+            dist/ChachaCapture-1.0.0-win-x64.zip
+            dist/SHA256SUMS.txt
+            dist/self-test-results.json
