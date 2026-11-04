@@ -267,6 +267,12 @@ namespace ChachaCapture
 
         public Bitmap ExportImage() { return CopyBitmap(_rendered); }
 
+        private void ExtractText()
+        {
+            FinishPolyline(); CancelGesture();
+            using (Bitmap source = ExportImage()) OcrForm.ShowImage(this, source);
+        }
+
         public void CommitChanges()
         {
             FinishPolyline(); CancelGesture();
@@ -378,6 +384,8 @@ namespace ChachaCapture
             Button quick = MakeButton("빠른 저장", 76, 28); quick.Click += delegate { QuickSaveImage(); }; _tips.SetToolTip(quick, "Ctrl+Shift+S");
             Button clear = MakeButton("편집 지우기", 86, 28); clear.Click += delegate { ClearEdits(); }; _tips.SetToolTip(clear, "Ctrl+Shift+Z · 모든 주석 지우기 (되돌릴 수 없음)");
             styleRow.Controls.AddRange(new Control[] { _fillButton, font, _boldButton, _italicButton, opacity, _opacityControl, print, quick, clear });
+            Button ocr = MakeButton("텍스트 추출", 92, 28); ocr.Click += delegate { ExtractText(); }; ocr.AccessibleName = "텍스트 추출"; _tips.SetToolTip(ocr, "Ctrl+Shift+O · 이미지에서 한글·영문·기호 읽기");
+            styleRow.Controls.Add(ocr);
             tools.Controls.Add(styleRow);
             tools.Controls.Add(options);
             tools.Controls.Add(toolRow);
@@ -1740,6 +1748,7 @@ namespace ChachaCapture
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            if (keyData == (Keys.Control | Keys.Shift | Keys.O)) { ExtractText(); return true; }
             if (keyData == (Keys.Control | Keys.C)) { CopyAndClose(); return true; }
             if (keyData == (Keys.Control | Keys.S)) { SaveImage(); return true; }
             if (keyData == (Keys.Control | Keys.Shift | Keys.S)) { QuickSaveImage(); return true; }

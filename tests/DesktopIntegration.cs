@@ -139,6 +139,65 @@ internal static class DesktopIntegration
         }
         notes.Add("Ctrl+C regression: persisted automatic floating enabled; overlay, inline editor, copy button, floating image, edited floating image, and recovery passed.");
     }
+    private static void OcrWorkflow(CaptureApplication app, string root)
+    {
+        Type tests = typeof(CaptureApplication).Assembly.GetType("ChachaCapture.OcrTests");
+        Type service = typeof(CaptureApplication).Assembly.GetType("ChachaCapture.OcrService");
+        FieldInfo cache = service.GetField("CacheRootForTest", BindingFlags.NonPublic | BindingFlags.Static);
+        cache.SetValue(null, Path.Combine(root, "ocr"));
+        try
+        {
+            using (Bitmap source = (Bitmap)tests.GetMethod("Sample", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { 20, false }))
+            {
+                app.Store.Settings.AutoSave = true; app.Store.Settings.AutoFloatCapture = true;
+                int history = app.Store.History().Length;
+                int saved = Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0;
+                OcrDialog(delegate { Complete(app, source, CaptureOutcome.Ocr, new Rectangle(Point.Empty, source.Size)); });
+                Check(app.AllPins.Length == 0 && app.Store.History().Length == history, "OCR capture created an image pin or history.");
+                Check((Directory.Exists(app.Store.Settings.QuickSaveFolder) ? Directory.GetFiles(app.Store.Settings.QuickSaveFolder).Length : 0) == saved, "OCR capture auto-saved a private image.");
+                app.PinImage(source); PinForm pin = app.AllPins.Single();
+                OcrDialog(delegate { Key(pin, Keys.Control | Keys.Shift | Keys.O); });
+                Check(!pin.IsDisposed && !pin.ClosedByUser && pin.Visible, "Copying OCR text closed the source pin.");
+                using (Bitmap unchanged = pin.ExportImage()) Check(SamePixels(source, unchanged), "OCR altered the source pin.");
+                ClosePins(app);
+                app.EditImage(source); EditorForm editor = ((List<EditorForm>)Field(app, "editors")).Last();
+                OcrDialog(delegate { Descendants(editor).OfType<Button>().Single(b => b.Text == "텍스트 추출").PerformClick(); });
+                Check(!editor.IsDisposed && !editor.CopiedAndClosed, "OCR copy closed the source editor.");
+                editor.Close();
+                app.Store.Settings.AutoSave = false;
+            }
+        }
+        finally { cache.SetValue(null, null); }
+    }
+
+    private static void OcrDialog(Action trigger)
+    {
+        Exception failure = null; bool copied = false; Stopwatch watch = Stopwatch.StartNew();
+        using (System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 30 })
+        {
+            timer.Tick += delegate
+            {
+                Form dialog = Application.OpenForms.Cast<Form>().FirstOrDefault(f => f.GetType().Name == "OcrForm");
+                if (dialog == null) return;
+                try
+                {
+                    if (watch.ElapsedMilliseconds > 30000) throw new TimeoutException("OCR dialog did not finish.");
+                    if ((bool)Field(dialog, "busy")) return;
+                    TextBox result = (TextBox)Field(dialog, "result");
+                    Check(result.Text.Contains("test@example.com"), "OCR UI did not receive real worker output.");
+                    result.Text = "수정한 텍스트 English ? ! % @ :";
+                    ((Button)Field(dialog, "copy")).PerformClick();
+                    Check(Clipboard.ContainsText() && Clipboard.GetText() == result.Text, "OCR did not copy edited Unicode text.");
+                    copied = true; timer.Stop(); dialog.Close();
+                }
+                catch (Exception error) { failure = error; timer.Stop(); dialog.Close(); }
+            };
+            timer.Start(); trigger(); timer.Stop();
+        }
+        if (failure != null) throw failure;
+        Check(copied, "OCR entry point did not show the result dialog.");
+    }
+
     [STAThread] private static int Main(string[] args)
     {
         string root = Path.Combine(Path.GetTempPath(), "ChachaCapture-desktopqa-" + Guid.NewGuid().ToString("N"));
@@ -200,6 +259,7 @@ internal static class DesktopIntegration
                 }
             }
             CopyCompletionWorkflow(app, root);
+            OcrWorkflow(app, root);
             HotkeyWindow hotkeys = (HotkeyWindow)Field(app, "hotkeys");
             Exception modalError = null;
             using (System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 80 })

@@ -209,6 +209,7 @@ namespace ChachaCapture
             menu.Items.Add(Item("인쇄…", "Ctrl+P", delegate { PrintImage(); }));
             menu.Items.Add(Item("클립보드 내용으로 교체", "Ctrl+V", delegate { Raise(ReplaceRequested); }));
             menu.Items.Add(Item("원본 텍스트 복사", "Ctrl+Shift+C", delegate { CopySourceText(); }));
+            menu.Items.Add(Item("텍스트 추출…", "Ctrl+Shift+O", delegate { ExtractText(); }));
             menu.Items.Add(Item("편집", "Space", delegate { RequestEdit(); }));
             menu.Items.Add(new ToolStripSeparator());
             ToolStripMenuItem rotate = new ToolStripMenuItem("회전 / 뒤집기");
@@ -649,6 +650,7 @@ namespace ChachaCapture
             switch (keyData)
             {
                 case Keys.Control | Keys.Shift | Keys.C: CopySourceText(); return true;
+                case Keys.Control | Keys.Shift | Keys.O: ExtractText(); return true;
                 case Keys.Control | Keys.V: Raise(ReplaceRequested); return true;
                 case Keys.Control | Keys.A: Raise(SelectAllRequested); return true;
                 case Keys.Control | Keys.S: SaveImage(); return true;
@@ -835,6 +837,11 @@ namespace ChachaCapture
         {
             if (String.IsNullOrEmpty(SourceText)) return;
             CopyText(SourceText);
+        }
+
+        private void ExtractText()
+        {
+            using (Bitmap source = ExportImage()) OcrForm.ShowImage(this, source);
         }
 
         private void CopyText(string text)

@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace ChachaCapture
 {
-    public enum CaptureOutcome { Edit, Copy, Pin, Save, Color, QuickSave, Print, CopyAndClose }
+    public enum CaptureOutcome { Edit, Copy, Pin, Save, Color, QuickSave, Print, CopyAndClose, Ocr }
 
     public sealed class CaptureHistoryItem : IDisposable
     {
@@ -676,6 +676,7 @@ namespace ChachaCapture
             }
             if (_hasSelection)
             {
+                if (key == Keys.O && modifiers == (Keys.Control | Keys.Shift)) { Finish(CaptureOutcome.Ocr); return true; }
                 if (key == Keys.Enter) { Finish(CaptureOutcome.Copy); return true; }
                 if (key == Keys.T && modifiers == Keys.None) { Finish(CaptureOutcome.Edit, "Text"); return true; }
                 if (key == Keys.B && modifiers == Keys.None) { Finish(CaptureOutcome.Edit, "Pen"); return true; }
@@ -755,7 +756,7 @@ namespace ChachaCapture
         {
             // Anchor to the monitor containing the selection's bottom-right pixel; it stays still while hovering.
             Rectangle monitor = GetMonitorBounds(new Point(_selection.Right - 1, _selection.Bottom - 1));
-            int width = Math.Min(610, Math.Max(1, monitor.Width - 16));
+            int width = Math.Min(680, Math.Max(1, monitor.Width - 16));
             int height = Math.Min(71, Math.Max(1, monitor.Height - 16));
             int x = Fit(_selection.Right - width, monitor.Left + 8, monitor.Right - width - 8);
             int y = _selection.Bottom + 12;
@@ -768,9 +769,10 @@ namespace ChachaCapture
         {
             // The floating action receives three icon slots so its purpose remains visible without hovering.
             int start = index <= 9 ? index : index + 2;
-            int span = index == 9 ? 3 : 1;
-            int left = bar.X + 7 + (bar.Width - 14) * start / 14;
-            int right = bar.X + 7 + (bar.Width - 14) * (start + span) / 14;
+            if (index == 12) start++;
+            int span = index == 9 ? 3 : index == 11 ? 2 : 1;
+            int left = bar.X + 7 + (bar.Width - 14) * start / 16;
+            int right = bar.X + 7 + (bar.Width - 14) * (start + span) / 16;
             return new Rectangle(left, bar.Y + 7, Math.Max(1, right - left - 3), 34);
         }
 
@@ -778,7 +780,7 @@ namespace ChachaCapture
         {
             if (!_hasSelection || !_toolbarVisible || _dragPart != DragPart.None) return -1;
             Rectangle bar = GetToolbarBounds();
-            for (int i = 0; i < 12; i++)
+            for (int i = 0; i < 13; i++)
                 if (GetToolbarButton(bar, i).Contains(point)) return i;
             return -1;
         }
@@ -792,6 +794,7 @@ namespace ChachaCapture
                 case 8: Finish((ModifierKeys & Keys.Shift) != 0 ? CaptureOutcome.QuickSave : CaptureOutcome.Save); break;
                 case 9: Finish(CaptureOutcome.Pin); break;
                 case 10: Finish(CaptureOutcome.CopyAndClose); break;
+                case 11: Finish(CaptureOutcome.Ocr); break;
                 default: Close(); break;
             }
         }
@@ -906,7 +909,7 @@ namespace ChachaCapture
             g.SmoothingMode = smoothing;
             string[] descriptions = { "사각형", "타원", "화살표", "연결선", "펜 · B", "텍스트 · T", "모자이크", "흐리게",
                 "저장 Ctrl+S · Shift 클릭 빠른 저장", "다른 창 위에 띄워 두고 드래그·크기 조절 · " + FloatingShortcutLabel,
-                "복사하고 닫기 Ctrl+C", "취소 Esc" };
+                "복사하고 닫기 Ctrl+C", "텍스트 추출 Ctrl+Shift+O", "취소 Esc" };
             int hover = HitToolbar(_mousePoint);
             for (int i = 0; i < descriptions.Length; i++)
             {
@@ -978,6 +981,8 @@ namespace ChachaCapture
                     case 10:
                         g.DrawLines(pen, new Point[] { new Point(x - 8, y), new Point(x - 2, y + 6), new Point(x + 9, y - 7) }); break;
                     case 11:
+                        TextRenderer.DrawText(g, "텍스트", _smallFont, button, color, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter); break;
+                    case 12:
                         g.DrawLine(pen, x - 6, y - 6, x + 6, y + 6); g.DrawLine(pen, x + 6, y - 6, x - 6, y + 6); break;
                 }
             }

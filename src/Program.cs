@@ -314,6 +314,7 @@ namespace ChachaCapture
         }
         private void CompleteCapture(CaptureResult result, string output)
         {
+            if (result.Outcome == CaptureOutcome.Ocr) { OcrForm.ShowImage(null, result.Image); return; }
             if (result.Outcome == CaptureOutcome.Color) { Clipboard.SetText(result.ColorHex); Notify(result.ColorHex + " 복사됨 · " + Store.Settings.PinHotkey + " 키로 색상표 플로팅"); return; }
             if (result.Outcome == CaptureOutcome.Edit) { EditInline(result.Image, result.Desktop, result.DesktopBounds, result.ScreenBounds, result.InitialTool); return; }
             if (result.Outcome == CaptureOutcome.Pin)
@@ -781,6 +782,7 @@ namespace ChachaCapture
             try { PersistPins(); Store.SaveSettings(); }
             catch (Exception e) { Notify("설정을 저장하지 못했습니다: " + e.Message); }
             Exiting = true;
+            foreach (OcrForm form in Application.OpenForms.OfType<OcrForm>().ToArray()) form.Close();
             if (updateForm != null && !updateForm.IsDisposed) updateForm.Close();
             if (captureTimer != null) { captureTimer.Stop(); captureTimer.Dispose(); captureTimer = null; }
             if (overlay != null) overlay.Close();
