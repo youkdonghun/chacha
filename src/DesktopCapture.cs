@@ -19,6 +19,7 @@ namespace ChachaCapture
         public bool UniformFrame { get; internal set; }
         public bool ProtectedContentMasked { get; internal set; }
         public bool EmbeddedCursor { get; internal set; }
+        public bool BasicGdiCopy { get; internal set; }
         internal readonly List<string> Events = new List<string>();
     }
 
@@ -27,7 +28,6 @@ namespace ChachaCapture
     {
         private const uint SourceCopy = 0x00CC0020;
         private const uint CaptureLayeredWindows = 0x40000000;
-        private const uint NoMirrorBitmap = 0x80000000;
         private const int DxgiNotFound = unchecked((int)0x887A0002);
         private const int DxgiStillDrawing = unchecked((int)0x887A000A);
         private static readonly Guid Factory1Id = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
@@ -65,10 +65,11 @@ namespace ChachaCapture
                 {
                     try
                     {
-                        Bitmap result = backend == DesktopCaptureMode.Graphics ? CaptureDuplication(displays, bounds, report) : CaptureGdi(displays, bounds, true);
+                        Bitmap result = backend == DesktopCaptureMode.Graphics ? CaptureDuplication(displays, bounds, report) : CaptureGdi(displays, bounds, report);
                         try
                         {
-                            LastBackend = backend == DesktopCaptureMode.Graphics ? "DXGI Desktop Duplication" : "GDI / 24-bit DIB / layered windows";
+                            LastBackend = backend == DesktopCaptureMode.Graphics ? "DXGI Desktop Duplication" :
+                                "GDI / compatible bitmap / " + (report.BasicGdiCopy ? "basic copy" : "layered windows");
                             report.Backend = LastBackend;
                             report.UniformFrame = IsUniformFrame(result, displays, bounds);
                             report.Notice = DescribeNotice(report);
@@ -123,20 +124,24 @@ namespace ChachaCapture
         internal static string DescribeFailure(Exception error)
         {
             Win32Exception native = error as Win32Exception;
-            string code = "0x" + error.HResult.ToString("X8") + (native == null ? "" : "; Win32=" + native.NativeErrorCode);
+            GdiCaptureException operation = error as GdiCaptureException;
+            string code = "0x" + error.HResult.ToString("X8") + (native == null ? "" : native.NativeErrorCode == 0 ? "; Win32=미제공" : "; Win32=" + native.NativeErrorCode);
+            if (operation != null) code += "; 단계=" + operation.Operation + "; 영역=" + operation.Area;
             if (IsAccessDenied(error)) return "Windows가 현재 화면에 대한 접근을 허용하지 않았습니다. (" + code + ")";
             if (error.HResult == unchecked((int)0x887A0022)) return "다른 캡처 앱이 GPU 캡처 연결을 사용 중입니다. 호환 캡처를 선택해 주세요. (" + code + ")";
             if (error.HResult == unchecked((int)0x887A0026)) return "화면 구성이 변경되어 GPU 캡처 연결이 끊겼습니다. 다시 캡처해 주세요. (" + code + ")";
             if (error.HResult == unchecked((int)0x887A0027)) return "GPU에서 새 화면을 받는 데 시간이 초과되었습니다. (" + code + ")";
             if (error is DllNotFoundException || error is EntryPointNotFoundException || error is NotSupportedException || error.HResult == unchecked((int)0x80004002))
                 return "선택한 캡처 방식을 현재 Windows 또는 디스플레이에서 지원하지 않습니다. (" + code + ")";
-            return "화면을 읽지 못했습니다. (" + code + ")";
+            return "화면을 읽지 못했습니다. (" + code + ")" +
+                (operation == null ? "" : "\n설정 → 캡처에서 자동 또는 GPU 방식을 선택해 다시 시도해 주세요.");
         }
 
         internal static string DescribeNotice(DesktopCaptureReport report)
         {
             if (report.ProtectedContentMasked) return "Windows가 일부 화면을 보호된 콘텐츠로 표시했습니다. 해당 영역은 캡처에 표시되지 않을 수 있습니다.";
             if (report.UniformFrame) return "캡처한 화면이 단색입니다. 미리보기가 실제 화면과 다르면 설정에서 캡처 방식을 바꾸고 다시 시도해 주세요.";
+            if (report.BasicGdiCopy) return "기본 호환 방식으로 캡처했습니다. 일부 반투명 창이 빠질 수 있으니 실제 화면과 비교해 주세요.";
             if (report.EmbeddedCursor) return "현재 GPU가 마우스 포인터를 화면에 포함했습니다. 포인터를 빼려면 호환 캡처를 사용해 주세요.";
             return "";
         }
@@ -199,55 +204,121 @@ namespace ChachaCapture
             return displays;
         }
 
-        private static Bitmap CaptureGdi(IList<Display> displays, Rectangle bounds, bool layered)
+        private static Bitmap CaptureGdi(IList<Display> displays, Rectangle bounds, DesktopCaptureReport report)
         {
             Bitmap result = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
             try
             {
+                bool basic = false;
                 using (Graphics graphics = Graphics.FromImage(result)) graphics.Clear(Color.Black);
                 foreach (Display display in displays)
-                    using (Bitmap monitor = CaptureGdiRegion(display.Bounds, layered))
+                {
+                    report.Events.Add("GDI display=" + display.Name + "; bounds=" + display.Bounds);
+                    bool usedBasic;
+                    using (Bitmap monitor = CaptureGdiRegion(display.Bounds, report, out usedBasic))
                         using (Graphics graphics = Graphics.FromImage(result))
                             graphics.DrawImageUnscaled(monitor, display.Bounds.X - bounds.X, display.Bounds.Y - bounds.Y);
+                    basic |= usedBasic;
+                }
+                report.BasicGdiCopy = basic;
                 return result;
             }
             catch { result.Dispose(); throw; }
         }
 
-        private static Bitmap CaptureGdiRegion(Rectangle area, bool layered)
+        private static Bitmap CaptureGdiRegion(Rectangle area, DesktopCaptureReport report, out bool usedBasic)
         {
-            IntPtr screen = IntPtr.Zero, memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero;
+            ClearNativeError(0);
+            IntPtr screen = GetDC(IntPtr.Zero);
+            int error = Marshal.GetLastWin32Error();
+            if (screen == IntPtr.Zero) throw new GdiCaptureException(error, "GetDC", area);
+            try { return CaptureGdiSource(screen, area, report, out usedBasic, null); }
+            finally { ReleaseDC(IntPtr.Zero, screen); }
+        }
+
+        // Keep the screen's native bitmap format during BitBlt. Convert only after deselecting
+        // the captured DDB, as required by GetDIBits. Source coordinates may be negative.
+        internal static Bitmap CaptureGdiSource(IntPtr screen, Rectangle area, DesktopCaptureReport report,
+            out bool usedBasic, Func<uint, int?> injectedBlitError)
+        {
+            usedBasic = false;
+            if (screen == IntPtr.Zero || area.Width <= 0 || area.Height <= 0) throw new ArgumentException("Invalid GDI capture source.");
+            IntPtr memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero, pixels = IntPtr.Zero;
             try
             {
-                screen = GetDC(IntPtr.Zero);
-                if (screen == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "바탕 화면 DC를 열지 못했습니다.");
+                ClearNativeError(0);
                 memory = CreateCompatibleDC(screen);
-                if (memory == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "캡처 버퍼를 만들지 못했습니다.");
-                int stride = checked((area.Width * 3 + 3) & ~3);
+                int error = Marshal.GetLastWin32Error();
+                if (memory == IntPtr.Zero) throw new GdiCaptureException(error, "CreateCompatibleDC", area);
+                ClearNativeError(0);
+                bitmap = CreateCompatibleBitmap(screen, area.Width, area.Height);
+                error = Marshal.GetLastWin32Error();
+                if (bitmap == IntPtr.Zero) throw new GdiCaptureException(error, "CreateCompatibleBitmap", area);
+                ClearNativeError(0);
+                previous = SelectObject(memory, bitmap);
+                error = Marshal.GetLastWin32Error();
+                if (previous == IntPtr.Zero || previous == new IntPtr(-1)) throw new GdiCaptureException(error, "SelectObject", area);
+
+                if (!TryGdiCopy(memory, screen, area, SourceCopy | CaptureLayeredWindows, injectedBlitError, out error))
+                {
+                    report.Events.Add("GDI BitBlt(CAPTUREBLT) failed; Win32=" + error + "; bounds=" + area);
+                    // Optional layered-window composition can fail in a display driver. Retry
+                    // the documented basic GDI copy once; never retry an explicit access denial.
+                    if (!CanRetryBasicGdi(error)) throw new GdiCaptureException(error, "BitBlt(CAPTUREBLT)", area);
+                    if (!TryGdiCopy(memory, screen, area, SourceCopy, injectedBlitError, out error))
+                        throw new GdiCaptureException(error, "BitBlt(SRCCOPY)", area);
+                    usedBasic = true;
+                    report.Events.Add("GDI basic-copy retry succeeded; bounds=" + area);
+                }
+                GdiFlush();
+                ClearNativeError(0);
+                IntPtr replaced = SelectObject(memory, previous);
+                error = Marshal.GetLastWin32Error();
+                if (replaced == IntPtr.Zero || replaced == new IntPtr(-1)) throw new GdiCaptureException(error, "SelectObject(restore)", area);
+                previous = IntPtr.Zero;
+                int stride = checked(area.Width * 4);
+                int byteCount = checked(stride * area.Height);
+                pixels = Marshal.AllocHGlobal(byteCount);
                 BitmapInfo info = new BitmapInfo();
                 info.Header.Size = (uint)Marshal.SizeOf(typeof(BitmapInfoHeader));
                 info.Header.Width = area.Width; info.Header.Height = -area.Height;
-                info.Header.Planes = 1; info.Header.BitCount = 24;
-                info.Header.SizeImage = checked((uint)(stride * area.Height));
-                IntPtr pixels;
-                bitmap = CreateDIBSection(screen, ref info, 0, out pixels, IntPtr.Zero, 0);
-                if (bitmap == IntPtr.Zero || pixels == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "캡처 픽셀 버퍼를 만들지 못했습니다.");
-                previous = SelectObject(memory, bitmap);
-                if (previous == IntPtr.Zero || previous == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "캡처 버퍼를 선택하지 못했습니다.");
-                uint operation = SourceCopy | NoMirrorBitmap | (layered ? CaptureLayeredWindows : 0);
-                if (!BitBlt(memory, 0, 0, area.Width, area.Height, screen, area.X, area.Y, operation))
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "화면 픽셀을 읽지 못했습니다.");
-                // GDI owns the buffer until its queued drawing has completed.
-                GdiFlush();
-                return ReadPixels(pixels, area.Width, area.Height, stride, 3);
+                info.Header.Planes = 1; info.Header.BitCount = 32; info.Header.SizeImage = (uint)byteCount;
+                ClearNativeError(0);
+                int lines = GetDIBits(screen, bitmap, 0, (uint)area.Height, pixels, ref info, 0);
+                error = Marshal.GetLastWin32Error();
+                if (lines != area.Height) throw new GdiCaptureException(error, "GetDIBits(" + lines + "/" + area.Height + ")", area);
+                report.Events.Add("GDI copied; format=native-to-BGRA32; bounds=" + area);
+                return ReadPixels(pixels, area.Width, area.Height, stride, 4);
             }
             finally
             {
+                if (pixels != IntPtr.Zero) Marshal.FreeHGlobal(pixels);
                 if (memory != IntPtr.Zero && previous != IntPtr.Zero && previous != new IntPtr(-1)) SelectObject(memory, previous);
                 if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
                 if (memory != IntPtr.Zero) DeleteDC(memory);
-                if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
             }
+        }
+
+        internal static bool CanRetryBasicGdi(int error)
+        { return error == 0 || error == 50 || error == 87 || error == 288; }
+
+        private static bool TryGdiCopy(IntPtr memory, IntPtr screen, Rectangle area, uint operation,
+            Func<uint, int?> injectedError, out int error)
+        {
+            ClearNativeError(0);
+            int? simulated = injectedError == null ? null : injectedError(operation);
+            if (simulated.HasValue) { error = simulated.Value; return false; }
+            bool copied = BitBlt(memory, 0, 0, area.Width, area.Height, screen, area.X, area.Y, operation);
+            error = Marshal.GetLastWin32Error();
+            return copied;
+        }
+
+        internal sealed class GdiCaptureException : Win32Exception
+        {
+            internal readonly string Operation;
+            internal readonly Rectangle Area;
+            internal GdiCaptureException(int error, string operation, Rectangle area)
+                : base(error, operation + " failed for " + area) { Operation = operation; Area = area; }
         }
 
         // Shared by GDI and DXGI: row pitch is independent from pixel width, and screen alpha is always opaque.
@@ -493,7 +564,9 @@ namespace ChachaCapture
         [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
         [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
         [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateCompatibleDC(IntPtr dc);
-        [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateDIBSection(IntPtr dc, ref BitmapInfo info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+        [DllImport("kernel32.dll", EntryPoint = "SetLastError", SetLastError = true)] private static extern void ClearNativeError(uint error);
+        [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
+        [DllImport("gdi32.dll", SetLastError = true)] private static extern int GetDIBits(IntPtr dc, IntPtr bitmap, uint start, uint lines, IntPtr bits, ref BitmapInfo info, uint usage);
         [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr SelectObject(IntPtr dc, IntPtr value);
         [DllImport("gdi32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool BitBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, uint operation);
         [DllImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteObject(IntPtr value);
