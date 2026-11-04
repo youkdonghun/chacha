@@ -42,6 +42,9 @@ namespace ChachaCapture
             try
             {
                 Directory.CreateDirectory(testRoot);
+                Check(results, "OCR Korean/English/punctuation, blank image and damaged runtime recovery", delegate { OcrTests.Recognition(Path.Combine(testRoot, "ocr"), Path.Combine(Path.GetDirectoryName(output), "ocr-test-results.json")); });
+                Check(results, "OCR pre-cancel, active cancellation and timeout release worker memory", delegate { OcrTests.Cancellation(Path.Combine(testRoot, "ocr")); });
+                Check(results, "OCR editable results, retry failure preservation and capture crop", delegate { OcrTests.Interface(Path.Combine(Path.GetDirectoryName(output), "ocr-preview.png")); });
                 Check(results, "Settings XML round-trip and atomic replacement", delegate { TestSettings(Path.Combine(testRoot, "settings")); });
                 Check(results, "Interrupted settings replacement preserves previous file", delegate { TestAtomicFailure(Path.Combine(testRoot, "atomic")); });
                 Check(results, "Corrupt settings fallback and retention bounds", delegate { TestSettingsFallback(Path.Combine(testRoot, "fallback")); });
