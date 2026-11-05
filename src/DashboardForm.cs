@@ -243,9 +243,9 @@ namespace ChachaCapture
             Label captureModeLabel = Ui.Label("캡처 방식", 10, Ui.Text); captureModeLabel.Location = new Point(27, 322); capturePage.Controls.Add(captureModeLabel);
             captureMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(180, 317), Width = 518,
                 BackColor = Ui.Surface, ForeColor = Ui.Text, FlatStyle = FlatStyle.Flat, AccessibleName = "캡처 방식" };
-            captureMode.Items.AddRange(new object[] { "자동 · 호환 방식 우선 (기본)", "호환 방식 · GDI", "GPU 방식 · DXGI" });
+            captureMode.Items.AddRange(new object[] { "자동 · 호환 방식 우선 (기본)", "호환 우선 · GDI", "GPU 우선 · DXGI" });
             captureMode.SelectedIndex = Math.Max(0, Math.Min(2, (int)s.CaptureMode)); capturePage.Controls.Add(captureMode);
-            Note(capturePage, "다른 앱과 함께 사용할 때는 자동 또는 호환 방식을 선택하세요.", 27, 356, 675, 28);
+            Note(capturePage, "선택한 방식에서 오류가 나면 다른 방식으로 한 번 더 시도합니다.", 27, 356, 675, 28);
             Button copyDiagnostic = Ui.Button("최근 캡처 진단 복사", false, delegate
             {
                 try { Clipboard.SetText(app.CaptureDiagnosticText); validation.Text = "최근 캡처 진단을 복사했습니다."; }

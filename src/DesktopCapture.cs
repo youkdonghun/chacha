@@ -19,7 +19,7 @@ namespace ChachaCapture
         public bool UniformFrame { get; internal set; }
         public bool ProtectedContentMasked { get; internal set; }
         public bool EmbeddedCursor { get; internal set; }
-        public bool BasicGdiCopy { get; internal set; }
+        public bool Recovered { get; internal set; }
         internal readonly List<string> Events = new List<string>();
     }
 
@@ -50,6 +50,9 @@ namespace ChachaCapture
         { return Capture(out bounds, preferGpu ? DesktopCaptureMode.Graphics : DesktopCaptureMode.Compatibility); }
 
         public static Bitmap Capture(out Rectangle bounds, DesktopCaptureMode mode)
+        { return Capture(out bounds, mode, true, null); }
+
+        internal static Bitmap Capture(out Rectangle bounds, DesktopCaptureMode mode, bool allowRecovery, Func<uint, int?> injectedGdiError)
         {
             if (!Enum.IsDefined(typeof(DesktopCaptureMode), mode)) mode = DesktopCaptureMode.Automatic;
             DesktopCaptureReport report = new DesktopCaptureReport();
@@ -59,35 +62,22 @@ namespace ChachaCapture
             try
             {
                 List<Display> displays = Displays(out bounds);
+                Rectangle captureBounds = bounds;
                 report.Events.Add("Mode=" + mode + "; displays=" + displays.Count + "; bounds=" + bounds);
                 FlushComposition();
-                foreach (DesktopCaptureMode backend in BackendOrder(mode))
+                Bitmap result = CaptureBackends(mode, allowRecovery, report, delegate(DesktopCaptureMode backend, DesktopCaptureReport attempt)
                 {
-                    try
-                    {
-                        Bitmap result = backend == DesktopCaptureMode.Graphics ? CaptureDuplication(displays, bounds, report) : CaptureGdi(displays, bounds, report);
-                        try
-                        {
-                            LastBackend = backend == DesktopCaptureMode.Graphics ? "DXGI Desktop Duplication" :
-                                "GDI / compatible bitmap / " + (report.BasicGdiCopy ? "basic copy" : "layered windows");
-                            report.Backend = LastBackend;
-                            report.UniformFrame = IsUniformFrame(result, displays, bounds);
-                            report.Notice = DescribeNotice(report);
-                            report.Events.Add("Result=" + LastBackend + "; uniform=" + report.UniformFrame + "; protected=" + report.ProtectedContentMasked + "; embeddedCursor=" + report.EmbeddedCursor);
-                            return result;
-                        }
-                        catch { result.Dispose(); throw; }
-                    }
-                    catch (Exception error)
-                    {
-                        if (!IsCaptureFailure(error)) throw;
-                        report.Events.Add(backend + ": " + DescribeFailure(error));
-                        // Do not use another backend to work around an explicit desktop access denial.
-                        if (IsAccessDenied(error) || mode != DesktopCaptureMode.Automatic)
-                            throw new InvalidOperationException(DescribeFailure(error), error);
-                    }
+                    return backend == DesktopCaptureMode.Graphics ? CaptureDuplication(displays, captureBounds, attempt) : CaptureGdi(displays, captureBounds, attempt, injectedGdiError);
+                });
+                try
+                {
+                    LastBackend = report.Backend;
+                    report.UniformFrame = IsUniformFrame(result, displays, bounds);
+                    report.Notice = DescribeNotice(report);
+                    report.Events.Add("Result=" + LastBackend + "; uniform=" + report.UniformFrame + "; protected=" + report.ProtectedContentMasked + "; embeddedCursor=" + report.EmbeddedCursor);
+                    return result;
                 }
-                throw new InvalidOperationException("현재 화면을 캡처하지 못했습니다. 설정의 캡처 진단에서 사용한 방식과 오류를 확인해 주세요.");
+                catch { result.Dispose(); throw; }
             }
             finally
             {
@@ -99,14 +89,47 @@ namespace ChachaCapture
 
         internal static DesktopCaptureMode[] BackendOrder(DesktopCaptureMode mode)
         {
-            if (mode == DesktopCaptureMode.Graphics) return new[] { DesktopCaptureMode.Graphics };
-            if (mode == DesktopCaptureMode.Compatibility) return new[] { DesktopCaptureMode.Compatibility };
+            if (mode == DesktopCaptureMode.Graphics) return new[] { DesktopCaptureMode.Graphics, DesktopCaptureMode.Compatibility };
             return new[] { DesktopCaptureMode.Compatibility, DesktopCaptureMode.Graphics };
+        }
+
+        // A saved mode is a preference. On an API failure, try the other supported backend
+        // once and disclose it. Never replace successful pixels based on their color.
+        internal static Bitmap CaptureBackends(DesktopCaptureMode mode, bool allowRecovery, DesktopCaptureReport report,
+            Func<DesktopCaptureMode, DesktopCaptureReport, Bitmap> capture)
+        {
+            DesktopCaptureMode[] order = BackendOrder(mode);
+            List<string> failures = new List<string>();
+            for (int i = 0; i < (allowRecovery ? order.Length : 1); i++)
+            {
+                DesktopCaptureReport attempt = new DesktopCaptureReport();
+                Bitmap result;
+                try { result = capture(order[i], attempt); }
+                catch (Exception error)
+                {
+                    if (!IsCaptureFailure(error)) throw;
+                    report.Events.AddRange(attempt.Events);
+                    string failure = order[i] + ": " + DescribeFailure(error);
+                    failures.Add(failure); report.Events.Add(failure);
+                    // An explicit desktop access denial must not trigger another API.
+                    if (IsAccessDenied(error) || !allowRecovery || i == order.Length - 1)
+                        throw new InvalidOperationException("현재 화면을 캡처하지 못했습니다.\n" + String.Join("\n", failures.ToArray()), error);
+                    report.Events.Add("Recovery=" + order[i] + " -> " + order[i + 1]);
+                    continue;
+                }
+                report.Events.AddRange(attempt.Events);
+                report.ProtectedContentMasked = attempt.ProtectedContentMasked;
+                report.EmbeddedCursor = attempt.EmbeddedCursor;
+                report.Recovered = i > 0;
+                report.Backend = order[i] == DesktopCaptureMode.Graphics ? "DXGI Desktop Duplication" : "GDI / compatible bitmap / layered windows";
+                return result;
+            }
+            throw new InvalidOperationException("사용할 수 있는 캡처 방식이 없습니다.");
         }
 
         /// <summary>Explicit supported GPU backend, useful for diagnosing a display-driver capture problem.</summary>
         public static Bitmap CaptureDxgi(out Rectangle bounds)
-        { return Capture(out bounds, DesktopCaptureMode.Graphics); }
+        { return Capture(out bounds, DesktopCaptureMode.Graphics, false, null); }
 
         private static bool IsCaptureFailure(Exception error)
         {
@@ -133,17 +156,17 @@ namespace ChachaCapture
             if (error.HResult == unchecked((int)0x887A0027)) return "GPU에서 새 화면을 받는 데 시간이 초과되었습니다. (" + code + ")";
             if (error is DllNotFoundException || error is EntryPointNotFoundException || error is NotSupportedException || error.HResult == unchecked((int)0x80004002))
                 return "선택한 캡처 방식을 현재 Windows 또는 디스플레이에서 지원하지 않습니다. (" + code + ")";
-            return "화면을 읽지 못했습니다. (" + code + ")" +
-                (operation == null ? "" : "\n설정 → 캡처에서 자동 또는 GPU 방식을 선택해 다시 시도해 주세요.");
+            return "화면을 읽지 못했습니다. (" + code + ")";
         }
 
         internal static string DescribeNotice(DesktopCaptureReport report)
         {
-            if (report.ProtectedContentMasked) return "Windows가 일부 화면을 보호된 콘텐츠로 표시했습니다. 해당 영역은 캡처에 표시되지 않을 수 있습니다.";
-            if (report.UniformFrame) return "캡처한 화면이 단색입니다. 미리보기가 실제 화면과 다르면 설정에서 캡처 방식을 바꾸고 다시 시도해 주세요.";
-            if (report.BasicGdiCopy) return "기본 호환 방식으로 캡처했습니다. 일부 반투명 창이 빠질 수 있으니 실제 화면과 비교해 주세요.";
-            if (report.EmbeddedCursor) return "현재 GPU가 마우스 포인터를 화면에 포함했습니다. 포인터를 빼려면 호환 캡처를 사용해 주세요.";
-            return "";
+            string notice = report.Recovered ? "선택한 방식에 오류가 있어 " +
+                (report.Backend == "DXGI Desktop Duplication" ? "GPU" : "호환") + " 방식으로 캡처했습니다." : "";
+            string detail = report.ProtectedContentMasked ? "Windows가 일부 화면을 보호된 콘텐츠로 표시했습니다. 해당 영역은 캡처에 표시되지 않을 수 있습니다." :
+                report.UniformFrame ? "캡처한 화면이 단색입니다. 미리보기가 실제 화면과 다르면 설정에서 캡처 방식을 바꾸고 다시 시도해 주세요." :
+                report.EmbeddedCursor ? "현재 GPU가 마우스 포인터를 화면에 포함했습니다. 포인터를 빼려면 호환 캡처를 사용해 주세요." : "";
+            return notice + (notice.Length > 0 && detail.Length > 0 ? " " : "") + detail;
         }
 
         private static bool IsUniformFrame(Bitmap image, IList<Display> displays, Rectangle bounds)
@@ -204,44 +227,39 @@ namespace ChachaCapture
             return displays;
         }
 
-        private static Bitmap CaptureGdi(IList<Display> displays, Rectangle bounds, DesktopCaptureReport report)
+        private static Bitmap CaptureGdi(IList<Display> displays, Rectangle bounds, DesktopCaptureReport report, Func<uint, int?> injectedError)
         {
             Bitmap result = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
             try
             {
-                bool basic = false;
                 using (Graphics graphics = Graphics.FromImage(result)) graphics.Clear(Color.Black);
                 foreach (Display display in displays)
                 {
                     report.Events.Add("GDI display=" + display.Name + "; bounds=" + display.Bounds);
-                    bool usedBasic;
-                    using (Bitmap monitor = CaptureGdiRegion(display.Bounds, report, out usedBasic))
+                    using (Bitmap monitor = CaptureGdiRegion(display.Bounds, report, injectedError))
                         using (Graphics graphics = Graphics.FromImage(result))
                             graphics.DrawImageUnscaled(monitor, display.Bounds.X - bounds.X, display.Bounds.Y - bounds.Y);
-                    basic |= usedBasic;
                 }
-                report.BasicGdiCopy = basic;
                 return result;
             }
             catch { result.Dispose(); throw; }
         }
 
-        private static Bitmap CaptureGdiRegion(Rectangle area, DesktopCaptureReport report, out bool usedBasic)
+        private static Bitmap CaptureGdiRegion(Rectangle area, DesktopCaptureReport report, Func<uint, int?> injectedError)
         {
             ClearNativeError(0);
             IntPtr screen = GetDC(IntPtr.Zero);
             int error = Marshal.GetLastWin32Error();
             if (screen == IntPtr.Zero) throw new GdiCaptureException(error, "GetDC", area);
-            try { return CaptureGdiSource(screen, area, report, out usedBasic, null); }
+            try { return CaptureGdiSource(screen, area, report, injectedError); }
             finally { ReleaseDC(IntPtr.Zero, screen); }
         }
 
         // Keep the screen's native bitmap format during BitBlt. Convert only after deselecting
         // the captured DDB, as required by GetDIBits. Source coordinates may be negative.
         internal static Bitmap CaptureGdiSource(IntPtr screen, Rectangle area, DesktopCaptureReport report,
-            out bool usedBasic, Func<uint, int?> injectedBlitError)
+            Func<uint, int?> injectedBlitError)
         {
-            usedBasic = false;
             if (screen == IntPtr.Zero || area.Width <= 0 || area.Height <= 0) throw new ArgumentException("Invalid GDI capture source.");
             IntPtr memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero, pixels = IntPtr.Zero;
             try
@@ -262,13 +280,9 @@ namespace ChachaCapture
                 if (!TryGdiCopy(memory, screen, area, SourceCopy | CaptureLayeredWindows, injectedBlitError, out error))
                 {
                     report.Events.Add("GDI BitBlt(CAPTUREBLT) failed; Win32=" + error + "; bounds=" + area);
-                    // Optional layered-window composition can fail in a display driver. Retry
-                    // the documented basic GDI copy once; never retry an explicit access denial.
-                    if (!CanRetryBasicGdi(error)) throw new GdiCaptureException(error, "BitBlt(CAPTUREBLT)", area);
-                    if (!TryGdiCopy(memory, screen, area, SourceCopy, injectedBlitError, out error))
-                        throw new GdiCaptureException(error, "BitBlt(SRCCOPY)", area);
-                    usedBasic = true;
-                    report.Events.Add("GDI basic-copy retry succeeded; bounds=" + area);
+                    // The v1.5.1 basic-copy retry returned success with blank frames on the
+                    // reported dual-monitor desktop. Preserve this failure for backend recovery.
+                    throw new GdiCaptureException(error, "BitBlt(CAPTUREBLT)", area);
                 }
                 GdiFlush();
                 ClearNativeError(0);
@@ -298,9 +312,6 @@ namespace ChachaCapture
                 if (memory != IntPtr.Zero) DeleteDC(memory);
             }
         }
-
-        internal static bool CanRetryBasicGdi(int error)
-        { return error == 0 || error == 50 || error == 87 || error == 288; }
 
         private static bool TryGdiCopy(IntPtr memory, IntPtr screen, Rectangle area, uint operation,
             Func<uint, int?> injectedError, out int error)

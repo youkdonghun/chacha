@@ -312,7 +312,54 @@ internal static class DesktopIntegration
                     if (error.InnerException == null) throw;
                     notes.Add("DXGI unavailable: " + error.Message + "; " + DesktopCapture.LastReport.Details);
                 }
-                foreach (Color solid in new[] { Color.White, Color.Black })
+                // Exercise the exact reported GDI failure through the real capture coordinator,
+                // then require an actual GPU frame and exact selected/clipboard pixels.
+                app.Store.Settings.CaptureMode = DesktopCaptureMode.Compatibility; app.Store.SaveSettings();
+                MethodInfo recoverCapture = typeof(DesktopCapture).GetMethod("Capture", BindingFlags.NonPublic | BindingFlags.Static,
+                    null, new[] { typeof(Rectangle).MakeByRefType(), typeof(DesktopCaptureMode), typeof(bool), typeof(Func<uint, int?>) }, null);
+                int blits = 0;
+                Func<uint, int?> failedLayeredCopy = delegate(uint operation)
+                {
+                    blits++;
+                    Check(operation == 0x40CC0020u, "Recovery attempted the basic copy that returned blank frames.");
+                    return 288;
+                };
+                object[] captureArguments = { Rectangle.Empty, new Storage(root).Settings.CaptureMode, true, failedLayeredCopy };
+                using (Panel marker = new Panel { Bounds = new Rectangle(100, 100, 80, 60), BackColor = Color.DeepPink })
+                {
+                    fixture.Controls.Add(marker); fixture.Refresh(); Pump(100);
+                    using (Bitmap recoveredFrame = (Bitmap)recoverCapture.Invoke(null, captureArguments))
+                    {
+                        bounds = (Rectangle)captureArguments[0];
+                        Point point = new Point(fixture.Left + 120 - bounds.Left, fixture.Top + 120 - bounds.Top);
+                        Check(blits == 1 && recoveredFrame.GetPixel(point.X, point.Y).ToArgb() == marker.BackColor.ToArgb(), "Error 288 recovery did not read actual GPU screen pixels.");
+                        Check(recoveredFrame.GetPixel(point.X - 50, point.Y - 50).ToArgb() == fixture.BackColor.ToArgb(), "Recovery returned a blank or single-color frame.");
+                        Check(DesktopCapture.LastReport.Recovered && DesktopCapture.LastBackend == "DXGI Desktop Duplication" &&
+                            DesktopCapture.LastReport.Details.Contains("288") && DesktopCapture.LastReport.Details.Contains("Recovery=Compatibility -> Graphics"), "Recovery did not disclose the original error and actual backend.");
+                        Check(new Storage(root).Settings.CaptureMode == DesktopCaptureMode.Compatibility, "Recovery rewrote the user's saved preference.");
+                        Rectangle region = new Rectangle(fixture.Left + 70, fixture.Top + 70, 120, 100);
+                        using (Bitmap expected = recoveredFrame.Clone(new Rectangle(region.X - bounds.X, region.Y - bounds.Y, region.Width, region.Height), System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                        using (CaptureOverlay selection = new CaptureOverlay(recoveredFrame, bounds, Rectangle.Empty, null, false, false))
+                        {
+                            selection.SetSelection(region); bool completed = false;
+                            selection.Completed += delegate(CaptureResult result)
+                            {
+                                using (result)
+                                {
+                                    completed = true;
+                                    Check(SamePixels(expected, result.Image), "Recovered frame changed during area selection.");
+                                    ClipboardImages.Copy(result.Image);
+                                    CheckClipboard(expected, "Recovered capture lost pixels when copied to the clipboard.");
+                                }
+                            };
+                            Key(selection, Keys.Control | Keys.C);
+                            Check(completed, "Recovered capture could not complete an area selection.");
+                        }
+                    }
+                    fixture.Controls.Remove(marker);
+                }
+                notes.Add("Injected GDI CAPTUREBLT error 288 -> actual DXGI -> area selection -> exact clipboard pixels: passed; saved Compatibility retained.");
+                foreach (Color solid in new[] { Color.White, Color.Black, Color.Gray })
                 {
                     fixture.BackColor = solid; fixture.Refresh(); Pump(100);
                     using (Bitmap captured = DesktopCapture.Capture(out bounds, DesktopCaptureMode.Automatic))

@@ -1,3 +1,18 @@
+# v1.5.2 검증 기록
+
+2026-11-05, Windows x64 / .NET Framework 4.8. 자체 검사 39개와 실제 화면 통합 검사 129개 assertion을 통과했습니다.
+
+- 추가 사용자 진단: v1.5.1 / Compatibility / 모니터 2개 / X=-1920, Y=0, 3840×1080. 두 모니터 모두 CAPTUREBLT가 Win32=288로 실패하고 SRCCOPY 재시도는 성공했지만 결과가 `uniform=True`였습니다. v1.5.1은 이 결과를 정상 캡처로 반환했습니다.
+- 해당 기본 복사 재시도를 제거했습니다. 저장된 Compatibility 설정에서도 오류가 나면 DXGI를 한 번 시도하며, 복구 여부·원래 오류·실제 API를 보고합니다. GPU 우선에서 실패하면 반대 순서로 한 번 복구합니다. 접근 거부는 재시도하지 않습니다.
+- 실제 네이티브 GDI 캡처 경로에 288 오류를 주입한 후 실제 DXGI로 두 색상의 테스트 창을 읽었습니다. 기본 복사를 시도하지 않았는지, 실제 픽셀·영역 선택·클립보드 이미지가 일치하는지 확인했습니다. 저장된 Compatibility 설정도 유지됐습니다.
+- 양쪽 API 실패 시 최대 두 번만 시도하고 두 오류를 보존하는지, 접근 거부 시 한 번만 시도하는지, 실패한 부분 프레임의 커서·보호 상태가 복구 프레임에 섞이지 않는지 검사했습니다.
+- 성공한 회색·흰색·검은색 화면을 다른 API로 바꾸지 않는 검사와 기존 RGB·알파·음수 좌표 검사를 통과했습니다. 실제 화면의 지정 픽셀도 확인했습니다.
+- OCR 및 기존 캡처·편집·복사·업데이트 검사를 유지했습니다. OCR 작업 프로세스의 측정 최대 private bytes는 87,179,264바이트였고, 각 프로세스 종료를 확인했습니다.
+
+이 환경은 실제 1920×1080 단일 모니터입니다. 사용자 드라이버의 자연 발생 288 오류는 재현되지 않았으며, 오류 주입 뒤 실제 GPU 복구를 검증한 결과입니다. 원래 CAPTUREBLT 호출이 288로 실패하는 드라이버 원인과 사용자의 물리 듀얼 모니터 최종 동작은 아직 확인되지 않았습니다.
+
+근거: 사용자가 제공한 v1.5.1 진단, `dist/self-test-results.json`, `artifacts/desktop-integration-v1.5.2.txt`. Microsoft의 [BitBlt](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-bitblt), [DuplicateOutput](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput) API를 사용합니다.
+
 # v1.5.1 검증 기록
 
 2026-11-05, Windows x64 / .NET Framework 4.8. 자체 검사 38개와 실제 화면을 포함한 통합 검사 117개 assertion을 통과했습니다.
