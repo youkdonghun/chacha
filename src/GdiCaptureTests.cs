@@ -35,8 +35,7 @@ namespace ChachaCapture
                         Rectangle left = new Rectangle(-1920, 0, 1920, 1080), right = new Rectangle(0, 0, 1920, 1080);
                         foreach (Rectangle region in new Rectangle[] { left, right, new Rectangle(-1920, 0, 3840, 1080) })
                         {
-                            bool basic;
-                            using (Bitmap capture = DesktopCapture.CaptureGdiSource(source, region, new DesktopCaptureReport(), out basic, null))
+                            using (Bitmap capture = DesktopCapture.CaptureGdiSource(source, region, new DesktopCaptureReport(), null))
                             {
                                 Require(capture.Size == region.Size, "GDI capture changed the requested dimensions.");
                                 Require(capture.GetPixel(20, 20).ToArgb() == (region.X < 0 ? Color.OrangeRed : Color.CornflowerBlue).ToArgb(), "Negative desktop origin selected the wrong pixels: " + region + " => " + capture.GetPixel(20, 20));
@@ -50,25 +49,30 @@ namespace ChachaCapture
                         }
                         foreach (int error in new int[] { 0, 50, 87, 288 })
                         {
-                            int calls = 0; bool basic; DesktopCaptureReport report = new DesktopCaptureReport();
-                            using (Bitmap capture = DesktopCapture.CaptureGdiSource(source, left, report, out basic, delegate(uint operation)
+                            int calls = 0; DesktopCaptureReport report = new DesktopCaptureReport();
+                            try
                             {
-                                calls++;
-                                Require(operation == (calls == 1 ? 0x40CC0020u : 0x00CC0020u), "GDI fallback changed the wrong raster flags.");
-                                return calls == 1 ? (int?)error : null;
-                            }))
+                                using (Bitmap unexpected = DesktopCapture.CaptureGdiSource(source, left, report, delegate(uint operation)
+                                {
+                                    calls++;
+                                    Require(operation == 0x40CC0020u, "A failed capture must not be retried without layered windows.");
+                                    return calls == 1 ? (int?)error : null;
+                                })) { }
+                                throw new InvalidOperationException("A failed GDI capture was accepted through a basic-copy retry.");
+                            }
+                            catch (DesktopCapture.GdiCaptureException failure)
                             {
-                                Require(calls == 2 && basic && capture.GetPixel(20, 20).ToArgb() == Color.OrangeRed.ToArgb(), "Bounded basic GDI retry lost the selected pixels.");
-                                Require(String.Join("\n", report.Events.ToArray()).Contains("Win32=" + error), "GDI retry lost the original driver error.");
+                                Require(calls == 1 && failure.NativeErrorCode == error, "The original driver error was lost or retried.");
+                                Require(String.Join("\n", report.Events.ToArray()).Contains("Win32=" + error), "GDI diagnostics lost the original driver error.");
                             }
                         }
                         int before = GetGuiResources(Process.GetCurrentProcess().Handle, 0);
                         for (int i = 0; i < 20; i++)
                         {
-                            bool basic; int calls = 0;
+                            int calls = 0;
                             try
                             {
-                                using (Bitmap unexpected = DesktopCapture.CaptureGdiSource(source, left, new DesktopCaptureReport(), out basic, delegate { calls++; return (int?)5; })) { }
+                                using (Bitmap unexpected = DesktopCapture.CaptureGdiSource(source, left, new DesktopCaptureReport(), delegate { calls++; return (int?)5; })) { }
                                 throw new InvalidOperationException("Access-denied capture unexpectedly succeeded.");
                             }
                             catch (DesktopCapture.GdiCaptureException error)
@@ -81,24 +85,21 @@ namespace ChachaCapture
                         Require(after <= before + 1, "Failed captures leaked GDI handles.");
                         try
                         {
-                            bool basic;
-                            using (Bitmap unexpected = DesktopCapture.CaptureGdiSource(source, right, new DesktopCaptureReport(), out basic, delegate { return (int?)288; })) { }
+                            using (Bitmap unexpected = DesktopCapture.CaptureGdiSource(source, right, new DesktopCaptureReport(), delegate { return (int?)288; })) { }
                             throw new InvalidOperationException("Repeated GDI failure was accepted.");
                         }
                         catch (DesktopCapture.GdiCaptureException error)
                         {
                             string description = DesktopCapture.DescribeFailure(error);
-                            Require(error.Operation == "BitBlt(SRCCOPY)" && description.Contains("288") && description.Contains("단계="), "Failed retry hid the final stage/code.");
+                            Require(error.Operation == "BitBlt(CAPTUREBLT)" && description.Contains("288") && description.Contains("단계="), "Failure hid the original stage/code.");
                         }
                     }
                     finally { NativePoint ignored; SetWindowOrgEx(source, oldOrigin.X, oldOrigin.Y, out ignored); }
                 }
                 finally { SelectObject(source, originalBitmap); DeleteObject(sourceBitmap); DeleteDC(source); }
             }
-            Require(!DesktopCapture.CanRetryBasicGdi(5) && !DesktopCapture.CanRetryBasicGdi(8), "Retry should not cover access denial or insufficient memory.");
             string missing = DesktopCapture.DescribeFailure(new DesktopCapture.GdiCaptureException(0, "GetDC", new Rectangle(-1920, 0, 1920, 1080)));
             Require(missing.Contains("미제공") && missing.Contains("GetDC") && missing.Contains("-1920"), "A missing Windows error was misreported as success or an unrelated stale error.");
-            Require(DesktopCapture.DescribeNotice(new DesktopCaptureReport { BasicGdiCopy = true }).Contains("반투명"), "Basic GDI copy must disclose layered-window limitations.");
         }
 
         [StructLayout(LayoutKind.Sequential)] private struct NativePoint { internal int X, Y; }

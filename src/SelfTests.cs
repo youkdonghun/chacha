@@ -62,7 +62,8 @@ namespace ChachaCapture
                 Check(results, "Opaque desktop pixels, padded RGB rows and negative stride", CaptureRegressionTests.Pixels);
                 Check(results, "DXGI baked cursor detection respects valid output metadata", DesktopCursorTests.Detection);
                 Check(results, "Capture backend selection, uniform frames and native failure diagnostics", DesktopCaptureTests.BackendSelectionAndDiagnostics);
-                Check(results, "GDI negative desktop coordinates, compatible pixels, bounded retry and handle cleanup", GdiCaptureTests.Run);
+                Check(results, "Capture recovery after error 288, saved preferences, metadata and bounded failures", DesktopCaptureTests.Recovery);
+                Check(results, "GDI negative coordinates, compatible pixels, no basic-copy retry and handle cleanup", GdiCaptureTests.Run);
                 Check(results, "Update UI cancellation, retries and installer failure keep the app safe", UpdateUiRegressionTests.Run);
                 Check(results, "Update release provenance, checksums, x64 format and installer paths (19 groups)", delegate { UpdateTests.Run(Path.Combine(testRoot, "updates")); });
                 Check(results, "Pin clone ownership, full-resolution transforms and native click-through", TestPin);
