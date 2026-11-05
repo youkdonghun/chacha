@@ -136,18 +136,25 @@ namespace ChachaCapture
             using (Bitmap source = Sample(20, false))
             using (OcrForm form = new OcrForm(source))
             {
-                form.Recognizer = delegate { return Task.FromResult(String.Join(Environment.NewLine, Lines)); };
+                form.Recognizer = delegate { return Task.FromResult(new OcrService.Response { text = String.Join(Environment.NewLine, Lines) }); };
                 CreateHandles(form);
                 form.ReadAsync().GetAwaiter().GetResult();
                 TextBox text = Field<TextBox>(form, "result"); Button copy = Field<Button>(form, "copy");
                 Assert(!text.ReadOnly && copy.Enabled && text.Text.Contains("test@example.com"), "OCR results cannot be edited/copied.");
                 Assert(Field<ComboBox>(form, "mode").Text == "한 문단", "The default OCR reading mode has no label.");
                 text.Text = "수정한 결과!";
-                form.Recognizer = delegate { TaskCompletionSource<string> error = new TaskCompletionSource<string>(); error.SetException(new IOException("fixture failure")); return error.Task; };
+                form.Recognizer = delegate { TaskCompletionSource<OcrService.Response> error = new TaskCompletionSource<OcrService.Response>(); error.SetException(new IOException("fixture failure")); return error.Task; };
                 form.ReadAsync().GetAwaiter().GetResult();
                 Assert(text.Text == "수정한 결과!" && copy.Enabled, "Retry failure discarded the edited result.");
-                form.Recognizer = delegate { return Task.FromResult(String.Join(Environment.NewLine, Lines)); };
+                string requestedContent = null;
+                form.Recognizer = delegate(Bitmap request, string mode, bool enlarge, string content, CancellationToken cancellation)
+                { requestedContent = content; return Task.FromResult(new OcrService.Response { text = String.Join(Environment.NewLine, Lines), review = new[] { "S8S5 / 5855" } }); };
+                Field<ComboBox>(form, "content").SelectedIndex = 2;
                 form.ReadAsync().GetAwaiter().GetResult();
+                Assert(requestedContent == "numbers" && Field<ComboBox>(form, "content").Enabled, "The numeric content selection did not reach the worker or remain usable.");
+                Field<ComboBox>(form, "content").SelectedIndex = 0;
+                form.ReadAsync().GetAwaiter().GetResult();
+                Assert(requestedContent == "mixed" && Field<Label>(form, "status").Text.Contains("S8S5 / 5855"), "Alternative readings were hidden from the user.");
                 if (previewPath != null)
                 {
                     using (Bitmap preview = new Bitmap(form.Width, form.Height)) { form.DrawToBitmap(preview, new Rectangle(Point.Empty, form.Size)); preview.Save(previewPath); }

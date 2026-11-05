@@ -15,7 +15,7 @@ namespace ChachaCapture
             Console.OutputEncoding = new UTF8Encoding(false);
             try
             {
-                if (args.Length != 2) throw new ArgumentException("Invalid OCR options.");
+                if (args.Length != 3 || (args[2] != "mixed" && args[2] != "latin" && args[2] != "numbers")) throw new ArgumentException("Invalid OCR options.");
                 PageSegMode mode = args[0] == "line" ? PageSegMode.SingleLine :
                     args[0] == "block" ? PageSegMode.SingleBlock : PageSegMode.Auto;
                 using (Stream input = Console.OpenStandardInput())
@@ -31,13 +31,13 @@ namespace ChachaCapture
                     using (Bitmap image = new Bitmap(bytes))
                     using (Bitmap prepared = OcrPreprocessing.Prepare(image, args[1] == "large"))
                     using (MemoryStream png = new MemoryStream())
-                    using (TesseractEngine engine = new TesseractEngine(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata"), "kor+eng", EngineMode.LstmOnly))
                     {
                         prepared.Save(png, System.Drawing.Imaging.ImageFormat.Png);
-                        engine.SetVariable("preserve_interword_spaces", "1");
                         using (Pix pixels = Pix.LoadFromMemory(png.ToArray()))
-                        using (Page page = engine.Process(pixels, mode))
-                            Console.Write(new JavaScriptSerializer().Serialize(new { text = page.GetText().Trim(), error = (string)null }));
+                        {
+                            OcrRecognition.Reading reading = OcrRecognition.Recognize(pixels, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata"), mode, args[2]);
+                            Console.Write(new JavaScriptSerializer().Serialize(new { text = reading.text, review = reading.review, error = (string)null }));
+                        }
                     }
                 }
                 return 0;
