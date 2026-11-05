@@ -8,7 +8,7 @@ Windows x64용 캡처·주석·화면 고정 프로그램입니다. Snipaste Win
 저장소와 배포 파일은 공개되어 있어 GitHub 로그인 없이 다운로드할 수 있습니다.
 Windows 10/11 x64와 .NET Framework 4.8을 사용합니다. 별도 설치나 관리자 권한 없이 EXE 하나로 실행됩니다.
 창을 닫으면 트레이에서 계속 실행합니다. 완전히 종료하려면 트레이 우클릭 → 종료를 사용하세요.
-새 EXE를 직접 받은 경우에는 먼저 기존 앱을 완전히 종료한 뒤 **v1.5.3** 파일을 실행하세요.
+새 EXE를 직접 받은 경우에는 먼저 기존 앱을 완전히 종료한 뒤 **v1.5.4** 파일을 실행하세요.
 
 ## 앱 안에서 업데이트
 
@@ -184,7 +184,7 @@ Windows 로그인 시 실행도 설정에서 선택할 수 있습니다.
 
 ## 호환 범위
 
-v1.5.3은 한글·영문 텍스트 추출과 호환 캡처 개선을 포함합니다. **Snipaste 전체 제품과 완전한 1:1 일치를 보증하는 버전은 아닙니다.**
+v1.5.4는 한글·영문 텍스트 추출과 호환 캡처 개선을 포함합니다. **Snipaste 전체 제품과 완전한 1:1 일치를 보증하는 버전은 아닙니다.**
 UI는 Chacha 한국어 테마이며, 세부 차이는 [기능 대조표](https://github.com/youkdonghun/chacha/blob/main/docs/PARITY.md)에 명시했습니다.
 바코드·가상 데스크톱 연동, 모든 HTML/CSS의 동일 렌더링, Snipaste 설정·그룹 파일 호환은 포함하지 않습니다.
 UI 요소 감지는 대상 앱의 접근성 정보 제공 여부에 따라 달라집니다.
@@ -204,8 +204,8 @@ Desktop Duplication은 기본적으로 한 세션에서 동시에 사용하는 �
 
 Windows 내장 Framework64 C# 5 컴파일러를 사용합니다. .NET SDK와 NuGet 설치는 필요하지 않습니다.
 첫 빌드는 NuGet.org의 Tesseract 5.2.0 패키지, 커밋이 고정된 tessdata_fast 한글·영문 모델과 tessdata_best 영문 모델을 받으며 SHA-256을 검사합니다. 이후 `obj/ocr-dependencies`의 검증된 캐시를 재사용합니다.
-결과: `dist\ChachaCapture.exe`, `dist\ChachaCapture-1.5.3-win-x64.zip`, SHA-256, 자체 검사·OCR 검사 결과.
-[검증 기록](docs/VALIDATION.md)과 [변경점](docs/RELEASE-v1.5.3.md)을 참고하세요.
+결과: `dist\ChachaCapture.exe`, `dist\ChachaCapture-1.5.4-win-x64.zip`, SHA-256, 자체 검사·OCR 검사 결과.
+[검증 기록](docs/VALIDATION.md)과 [변경점](docs/RELEASE-v1.5.4.md)을 참고하세요.
 
 실제 화면 전체 검사는 `tests/run-desktop-tests.ps1`로 실행합니다. 화면 접근이 제한된 세션에서는 `-WorkflowOnly`로 바탕화면 캡처를 제외한 컨트롤러 흐름만 검사할 수 있으며, 전체 화면 검사를 대체하지 않습니다.
 

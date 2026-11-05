@@ -30,6 +30,9 @@ namespace ChachaCapture
         private const uint CaptureLayeredWindows = 0x40000000;
         private const int DxgiNotFound = unchecked((int)0x887A0002);
         private const int DxgiStillDrawing = unchecked((int)0x887A000A);
+        private const int DxgiWaitTimeout = unchecked((int)0x887A0027);
+        private const int DuplicationBudgetMilliseconds = 3000;
+        internal static Func<bool> SkipDxgiFrameForTest;
         private static readonly Guid Factory1Id = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
         private static readonly Guid Output1Id = new Guid("00cddea8-939b-4b83-a340-a685226666cc");
         private static readonly Guid Texture2DId = new Guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
@@ -374,7 +377,7 @@ namespace ChachaCapture
                 Check(CreateDXGIFactory1(ref factoryId, out factory));
                 HashSet<string> captured = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 Stopwatch elapsed = Stopwatch.StartNew();
-                for (uint adapterIndex = 0; adapterIndex < 16 && captured.Count < displays.Count && elapsed.ElapsedMilliseconds < 900; adapterIndex++)
+                for (uint adapterIndex = 0; adapterIndex < 16 && captured.Count < displays.Count && elapsed.ElapsedMilliseconds < DuplicationBudgetMilliseconds; adapterIndex++)
                 {
                     IntPtr adapter;
                     int adapterResult = Method<Enumerate>(factory, 12)(factory, adapterIndex, out adapter);
@@ -385,7 +388,7 @@ namespace ChachaCapture
                     {
                         uint featureLevel;
                         Check(D3D11CreateDevice(adapter, 0, IntPtr.Zero, 0x20, IntPtr.Zero, 0, 7, out device, out featureLevel, out context));
-                        for (uint outputIndex = 0; outputIndex < 32 && captured.Count < displays.Count && elapsed.ElapsedMilliseconds < 900; outputIndex++)
+                        for (uint outputIndex = 0; outputIndex < 32 && captured.Count < displays.Count && elapsed.ElapsedMilliseconds < DuplicationBudgetMilliseconds; outputIndex++)
                         {
                             IntPtr output;
                             int outputResult = Method<Enumerate>(adapter, 7)(adapter, outputIndex, out output);
@@ -400,7 +403,8 @@ namespace ChachaCapture
                                 foreach (Display candidate in displays)
                                     if (String.Equals(candidate.Name, description.DeviceName, StringComparison.OrdinalIgnoreCase)) { display = candidate; break; }
                                 if (display == null || captured.Contains(display.Name)) continue;
-                                using (Bitmap frame = CaptureOutput(output, device, context, description, report))
+                                int remaining = (int)Math.Max(0, DuplicationBudgetMilliseconds - elapsed.ElapsedMilliseconds);
+                                using (Bitmap frame = CaptureOutput(output, device, context, description, report, Math.Min(1000, remaining)))
                                 {
                                     if (frame.Size != display.Bounds.Size) throw new InvalidOperationException("캡처 중 디스플레이 크기가 변경되었습니다.");
                                     using (Graphics graphics = Graphics.FromImage(result))
@@ -413,14 +417,19 @@ namespace ChachaCapture
                     }
                     finally { Release(context); Release(device); Release(adapter); }
                 }
-                if (captured.Count != displays.Count) throw new NotSupportedException("현재 구성의 모든 디스플레이에서 Desktop Duplication을 사용할 수 없습니다.");
+                if (captured.Count != displays.Count)
+                {
+                    report.Events.Add("DXGI incomplete; captured=" + captured.Count + "/" + displays.Count + "; elapsedMs=" + elapsed.ElapsedMilliseconds);
+                    if (elapsed.ElapsedMilliseconds >= DuplicationBudgetMilliseconds) throw new COMException("GPU capture deadline exceeded.", DxgiWaitTimeout);
+                    throw new NotSupportedException("현재 구성의 모든 디스플레이에서 Desktop Duplication을 사용할 수 없습니다.");
+                }
                 return result;
             }
             catch { result.Dispose(); throw; }
             finally { Release(factory); }
         }
 
-        private static Bitmap CaptureOutput(IntPtr output, IntPtr device, IntPtr context, OutputDescription description, DesktopCaptureReport report)
+        private static Bitmap CaptureOutput(IntPtr output, IntPtr device, IntPtr context, OutputDescription description, DesktopCaptureReport report, int timeoutMilliseconds)
         {
             IntPtr output1 = IntPtr.Zero, duplication = IntPtr.Zero, resource = IntPtr.Zero, texture = IntPtr.Zero, staging = IntPtr.Zero;
             bool acquired = false, mapped = false;
@@ -429,16 +438,22 @@ namespace ChachaCapture
                 Guid outputId = Output1Id;
                 Check(Marshal.QueryInterface(output, ref outputId, out output1));
                 Check(Method<Duplicate>(output1, 22)(output1, device, out duplication));
-                FrameInfo info;
-                Check(Method<Acquire>(duplication, 8)(duplication, 120, out info, out resource));
-                acquired = true;
                 Rectangle outputBounds = Rectangle.FromLTRB(description.Coordinates.Left, description.Coordinates.Top,
                     description.Coordinates.Right, description.Coordinates.Bottom);
+                Acquire nativeAcquire = Method<Acquire>(duplication, 8);
+                FrameInfo info = AcquireDesktopFrame(duplication,
+                    delegate(IntPtr self, uint timeout, out FrameInfo frameInfo, out IntPtr frameResource)
+                    {
+                        int code = nativeAcquire(self, timeout, out frameInfo, out frameResource);
+                        if (code >= 0 && SkipDxgiFrameForTest != null && SkipDxgiFrameForTest()) frameInfo.LastPresentTime = 0;
+                        return code;
+                    }, Method<ReleaseFrame>(duplication, 14), Release, timeoutMilliseconds, outputBounds, report, out resource, null);
+                acquired = true;
                 // A hardware/driver cursor must not silently replace a successful DXGI frame with
                 // a different backend. Keep the chosen pixels and let the caller avoid drawing it twice.
                 report.ProtectedContentMasked |= info.ProtectedContentMaskedOut != 0;
                 report.EmbeddedCursor |= HasEmbeddedCursor(info, outputBounds);
-                report.Events.Add("DXGI output=" + outputBounds + "; present=" + (info.LastPresentTime != 0) + "; protected=" + (info.ProtectedContentMaskedOut != 0));
+                report.Events.Add("DXGI output=" + outputBounds + "; present=" + (info.LastPresentTime != 0) + "; frames=" + info.AccumulatedFrames + "; protected=" + (info.ProtectedContentMaskedOut != 0));
                 Guid textureId = Texture2DId;
                 Check(Marshal.QueryInterface(resource, ref textureId, out texture));
                 TextureDescription textureDescription;
@@ -477,6 +492,63 @@ namespace ChachaCapture
                 Release(staging); Release(texture); Release(resource);
                 if (acquired) Method<ReleaseFrame>(duplication, 14)(duplication);
                 Release(duplication); Release(output1);
+            }
+        }
+
+        // A new duplication session has no previously copied desktop. A successful acquisition
+        // can be pointer-only, so wait for an actual desktop update before reading its surface.
+        // The caller owns the returned resource and held frame; all rejected frames are released here.
+        internal static FrameInfo AcquireDesktopFrame(IntPtr duplication, Acquire acquire, ReleaseFrame releaseFrame,
+            Action<IntPtr> releaseResource, int timeoutMilliseconds, Rectangle outputBounds, DesktopCaptureReport report,
+            out IntPtr resource, Func<long> elapsedMilliseconds)
+        {
+            resource = IntPtr.Zero;
+            Stopwatch wait = Stopwatch.StartNew();
+            if (elapsedMilliseconds == null) elapsedMilliseconds = delegate { return wait.ElapsedMilliseconds; };
+            int attempts = 0, skipped = 0, timeouts = 0;
+            FrameInfo lastPointer = new FrameInfo();
+            while (true)
+            {
+                long remaining = timeoutMilliseconds - elapsedMilliseconds();
+                if (remaining <= 0)
+                {
+                    report.Events.Add("DXGI no desktop update; output=" + outputBounds + "; attempts=" + attempts + "; skipped=" + skipped + "; timeouts=" + timeouts + "; waitMs=" + elapsedMilliseconds());
+                    throw new COMException("GPU did not provide an initial desktop image.", DxgiWaitTimeout);
+                }
+                FrameInfo info; IntPtr candidate;
+                int code = acquire(duplication, (uint)Math.Min(100, remaining), out info, out candidate);
+                attempts++;
+                if (code < 0)
+                {
+                    if (candidate != IntPtr.Zero) releaseResource(candidate);
+                    if (code == DxgiWaitTimeout) { timeouts++; continue; }
+                    Check(code);
+                }
+                bool transfer = false;
+                try
+                {
+                    if (candidate == IntPtr.Zero) throw new InvalidOperationException("GPU가 화면 데이터를 반환하지 않았습니다.");
+                    if (info.LastMouseUpdateTime != 0) lastPointer = info;
+                    if (info.LastPresentTime == 0) { skipped++; continue; }
+                    // Pointer metadata is valid only on a pointer update. Retain the most recent
+                    // such update if it preceded the first desktop update in this session.
+                    if (info.LastMouseUpdateTime == 0 && lastPointer.LastMouseUpdateTime != 0)
+                    {
+                        info.LastMouseUpdateTime = lastPointer.LastMouseUpdateTime;
+                        info.PointerX = lastPointer.PointerX; info.PointerY = lastPointer.PointerY;
+                        info.PointerVisible = lastPointer.PointerVisible;
+                    }
+                    report.Events.Add("DXGI first desktop; output=" + outputBounds + "; attempts=" + attempts + "; skipped=" + skipped + "; timeouts=" + timeouts + "; waitMs=" + elapsedMilliseconds());
+                    resource = candidate; transfer = true; return info;
+                }
+                finally
+                {
+                    if (!transfer)
+                    {
+                        try { if (candidate != IntPtr.Zero) releaseResource(candidate); }
+                        finally { Check(releaseFrame(duplication)); }
+                    }
+                }
             }
         }
 
@@ -544,7 +616,7 @@ namespace ChachaCapture
             public NativeRect Coordinates; [MarshalAs(UnmanagedType.Bool)] public bool AttachedToDesktop;
             public uint Rotation; public IntPtr Monitor;
         }
-        [StructLayout(LayoutKind.Sequential)] private struct FrameInfo
+        [StructLayout(LayoutKind.Sequential)] internal struct FrameInfo
         {
             public long LastPresentTime, LastMouseUpdateTime; public uint AccumulatedFrames; public int RectsCoalesced, ProtectedContentMaskedOut;
             public int PointerX, PointerY, PointerVisible; public uint TotalMetadataBufferSize, PointerShapeBufferSize;
@@ -558,8 +630,8 @@ namespace ChachaCapture
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int Enumerate(IntPtr self, uint index, out IntPtr value);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int GetOutputDescription(IntPtr self, out OutputDescription description);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int Duplicate(IntPtr self, IntPtr device, out IntPtr duplication);
-        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int Acquire(IntPtr self, uint milliseconds, out FrameInfo info, out IntPtr resource);
-        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int ReleaseFrame(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] internal delegate int Acquire(IntPtr self, uint milliseconds, out FrameInfo info, out IntPtr resource);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] internal delegate int ReleaseFrame(IntPtr self);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void GetTextureDescription(IntPtr self, out TextureDescription description);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int CreateTexture(IntPtr self, ref TextureDescription description, IntPtr data, out IntPtr texture);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void CopyResource(IntPtr self, IntPtr destination, IntPtr source);
