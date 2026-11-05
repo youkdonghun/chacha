@@ -1,3 +1,17 @@
+# v1.5.1 검증 기록
+
+2026-11-05, Windows x64 / .NET Framework 4.8. 자체 검사 38개와 실제 화면을 포함한 통합 검사 117개 assertion을 통과했습니다.
+
+- 사용자 보고: v1.5.0 / Compatibility / 2개 모니터 / 전체 영역 X=-1920, Y=0, 3840×1080 / Win32=288. 이전 진단에는 실패 API가 없어 특정 호출의 실패로 단정할 수 없습니다.
+- 이 작업 환경은 1920×1080 단일 모니터이며, 수정 전 v1.5.0에서도 실제 캡처 검사가 통과했습니다. 사용자 오류 자체를 재현했다고 주장하지 않습니다.
+- 수정 후 실제 GDI 캡처·DXGI 캡처·앱 캡처에서 합성 화면의 지정 픽셀을 확인했습니다. 흰색·검은색 단색 화면과 원본 RGB/불투명도를 보존했습니다.
+- 네이티브 메모리 DC에 사용자 보고와 같은 -1920 원점, 3840×1080 이미지를 구성해 왼쪽·오른쪽·전체 영역의 좌표·크기·모서리 픽셀을 검사했습니다. 이는 실제 두 물리 모니터 검사의 대체가 아닙니다.
+- CAPTUREBLT 오류 0·50·87·288 주입 후 SRCCOPY 한 번 재시도, 재시도 성공 픽셀, 반복 실패 시 정확한 최종 단계·오류 진단을 검사했습니다.
+- 접근 거부(5)에서는 재시도하지 않으며, 20회 실패 후 GDI 핸들이 늘어나지 않는지 확인했습니다. 오류 코드 미제공과 기본 복사 사용 시 안내도 검사했습니다.
+- OCR 실제 작업·취소·시간 초과·결과 복사와 기존 캡처·편집·업데이트 회귀 검사는 유지됩니다.
+
+근거: Microsoft의 [CreateCompatibleBitmap](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-createcompatiblebitmap), [GetDIBits](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdibits), [BitBlt](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-bitblt) 문서.
+
 # v1.5.0 검증 기록
 
 2026-11-05, Windows x64 / .NET Framework 4.8. `build.ps1 -Test` 자체 검사 37개와 `tests/run-desktop-tests.ps1 -SkipBuild -WorkflowOnly` 동작 검사 92개 assertion을 통과했습니다.
