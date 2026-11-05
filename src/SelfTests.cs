@@ -62,6 +62,7 @@ namespace ChachaCapture
                 Check(results, "Optional hotkeys, recording suspension and automatic floating migration", delegate { CaptureRegressionTests.OptionalSettings(Path.Combine(testRoot, "optional-hotkeys")); });
                 Check(results, "Opaque desktop pixels, padded RGB rows and negative stride", CaptureRegressionTests.Pixels);
                 Check(results, "DXGI baked cursor detection respects valid output metadata", DesktopCursorTests.Detection);
+                Check(results, "DXGI initial desktop update, pointer-only frames, deadlines and resource ownership", DxgiFrameTests.Run);
                 Check(results, "Capture backend selection, uniform frames and native failure diagnostics", DesktopCaptureTests.BackendSelectionAndDiagnostics);
                 Check(results, "Capture recovery after error 288, saved preferences, metadata and bounded failures", DesktopCaptureTests.Recovery);
                 Check(results, "GDI negative coordinates, compatible pixels, no basic-copy retry and handle cleanup", GdiCaptureTests.Run);

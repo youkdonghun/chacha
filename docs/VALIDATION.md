@@ -1,3 +1,17 @@
+# v1.5.4 검증 기록
+
+2026-11-05, Windows x64 / .NET Framework 4.8. 자체 검사 41개와 실제 화면 통합 검사 133개 assertion을 통과했습니다.
+
+- 사용자 진단: v1.5.3 / Compatibility / 물리 모니터 2개 / X=-1920, Y=0, 3840×1080. GDI CAPTUREBLT가 Win32=288로 실패한 뒤 DXGI 두 출력 모두 `present=False`, 최종 `uniform=True`였습니다. 사용자는 미리보기도 단색임을 확인했습니다.
+- 새 Desktop Duplication 연결에서 첫 `AcquireNextFrame` 성공만으로 복사하던 경로를 수정했습니다. `LastPresentTime=0`인 프레임을 해제하고 실제 데스크톱 갱신을 기다립니다. 모니터별 대기 최대 1초, 전체 GPU 경로 대기 예산 3초이며, 첫 화면이 없으면 시간 초과로 실패합니다.
+- x64 프레임 메타데이터 크기·오프셋, 마우스 전용 → 대기 시간 초과 → 화면 갱신 순서, 음수 좌표 출력의 독립적인 첫 화면 수신, 반복 마우스 전용/시간 초과의 마감, 리소스·프레임 해제 순서, 접근 거부/연결 손실 즉시 실패, 빈 리소스 정리를 검사했습니다.
+- 실제 GDI 288 오류 주입 뒤 실제 DXGI 연결의 첫 수신 메타데이터를 마우스 전용으로 표시했습니다. 테스트 창의 표식 색을 바꾸고, 다음 실제 GPU 화면에서 새 색과 주변 배경 픽셀이 정확히 읽히는지 확인했습니다. 결과는 `attempts=2; skipped=1; timeouts=0; present=True; uniform=False`였습니다.
+- 기존 GDI 288 → DXGI → 영역 선택 → 클립보드 픽셀 일치, 저장된 캡처 설정 보존, 단색 화면 보존, OCR 1.5.3 기능 및 취소·시간 초과 후 프로세스 종료 검사를 유지했습니다.
+
+실제 화면 검사는 1920×1080 단일 모니터에서 수행했습니다. 오류 주입 검사는 실제 GPU 프레임 복사를 사용하지만 사용자 PC의 자연 발생 현상·듀얼 모니터 드라이버 문제를 재현한 것은 아닙니다. GDI 오류 288 자체의 원인과 사용자 환경에서의 최종 해결 여부는 아직 확인되지 않았습니다.
+
+근거: 사용자 v1.5.3 진단·단색 미리보기 확인, `dist/self-test-results.json`, `artifacts/desktop-integration-v1.5.4.txt`. Microsoft [프레임 정보](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ns-dxgi1_2-dxgi_outdupl_frame_info), [AcquireNextFrame](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-acquirenextframe), [ReleaseFrame](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-releaseframe) 문서를 따릅니다.
+
 # v1.5.3 검증 기록
 
 2026-11-05, Windows x64 / .NET Framework 4.8. 자체 검사 40개와 실제 화면 통합 검사 129개 assertion을 통과했습니다.

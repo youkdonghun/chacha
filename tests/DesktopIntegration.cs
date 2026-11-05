@@ -356,6 +356,31 @@ internal static class DesktopIntegration
                             Check(completed, "Recovered capture could not complete an area selection.");
                         }
                     }
+                    // Keep the real DXGI session and its resource ownership. Mark its first
+                    // acquired frame as pointer-only, then repaint our own fixture so the next
+                    // acquired desktop must contain a different, known pixel color.
+                    FieldInfo skipFrame = typeof(DesktopCapture).GetField("SkipDxgiFrameForTest", BindingFlags.NonPublic | BindingFlags.Static);
+                    int acquiredFrames = 0;
+                    skipFrame.SetValue(null, new Func<bool>(delegate
+                    {
+                        acquiredFrames++;
+                        if (acquiredFrames != 1) return false;
+                        marker.BackColor = Color.LimeGreen; marker.Refresh();
+                        return true;
+                    }));
+                    try
+                    {
+                        using (Bitmap delayedFrame = (Bitmap)recoverCapture.Invoke(null, captureArguments))
+                        {
+                            bounds = (Rectangle)captureArguments[0];
+                            Point point = new Point(fixture.Left + 120 - bounds.Left, fixture.Top + 120 - bounds.Top);
+                            Check(acquiredFrames >= 2 && delayedFrame.GetPixel(point.X, point.Y).ToArgb() == Color.LimeGreen.ToArgb(), "A pointer-only first frame was accepted instead of the later desktop update.");
+                            Check(delayedFrame.GetPixel(point.X - 50, point.Y - 50).ToArgb() == fixture.BackColor.ToArgb(), "Waiting for a desktop update lost surrounding screen pixels.");
+                            Check(DesktopCapture.LastReport.Details.Contains("DXGI first desktop") && System.Text.RegularExpressions.Regex.IsMatch(DesktopCapture.LastReport.Details, @"skipped=[1-9][0-9]*;") && DesktopCapture.LastReport.Details.Contains("present=True"), "Desktop acquisition did not report its skipped initial frame.");
+                            notes.Add("Injected 288 + pointer-only initial DXGI frame -> later real desktop pixels: passed; " + DesktopCapture.LastReport.Details.Replace(Environment.NewLine, " | "));
+                        }
+                    }
+                    finally { skipFrame.SetValue(null, null); }
                     fixture.Controls.Remove(marker);
                 }
                 notes.Add("Injected GDI CAPTUREBLT error 288 -> actual DXGI -> area selection -> exact clipboard pixels: passed; saved Compatibility retained.");
