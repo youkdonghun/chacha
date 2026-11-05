@@ -3,8 +3,10 @@ Chacha Capture OCR third-party notices
 Tesseract .NET 5.2.0: Copyright 2012-2020 Charles Weld.
 https://github.com/charlesw/tesseract
 Tesseract OCR 5 and tessdata_fast Korean / English: Apache License 2.0.
+The dedicated Latin/numeric modes use tessdata_best English: Apache License 2.0.
 https://github.com/tesseract-ocr/tesseract
 https://github.com/tesseract-ocr/tessdata_fast/tree/87416418657359cb625c412a48b6e1d6d41c29bd
+https://github.com/tesseract-ocr/tessdata_best/tree/e12c65a915945e4c28e237a9b52bc4a8f39a0cec
 No changes to the bundled OCR binaries or trained models.
 
 

@@ -16,14 +16,18 @@ namespace ChachaCapture
 {
     internal static class OcrService
     {
-        internal sealed class Response { public string text { get; set; } public string error { get; set; } }
+        internal sealed class Response { public string text { get; set; } public string error { get; set; } public string[] review { get; set; } }
         private static readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
         internal static Action<int> WorkerStartedForTest;
         internal static string CacheRootForTest;
         internal static int TimeoutMilliseconds = 90000;
 
         internal static async Task<string> RecognizeAsync(Bitmap image, string mode, bool enlarge, CancellationToken cancellation)
+        { return (await RecognizeDetailedAsync(image, mode, enlarge, "mixed", cancellation).ConfigureAwait(false)).text; }
+
+        internal static async Task<Response> RecognizeDetailedAsync(Bitmap image, string mode, bool enlarge, string content, CancellationToken cancellation)
         {
+            if (content != "mixed" && content != "latin" && content != "numbers") throw new ArgumentException("Invalid OCR content mode.");
             await Gate.WaitAsync(cancellation).ConfigureAwait(false);
             try
             {
@@ -39,7 +43,7 @@ namespace ChachaCapture
                     using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
                     {
                         timeout.CancelAfter(TimeoutMilliseconds);
-                        process.StartInfo = new ProcessStartInfo(Path.Combine(runtime, "ChachaOcr.exe"), (mode == "line" || mode == "block" ? mode : "auto") + (enlarge ? " large" : " normal")) {
+                        process.StartInfo = new ProcessStartInfo(Path.Combine(runtime, "ChachaOcr.exe"), (mode == "line" || mode == "block" ? mode : "auto") + (enlarge ? " large " : " normal ") + content) {
                             UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = runtime,
                             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
                             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
@@ -68,7 +72,9 @@ namespace ChachaCapture
                                     Response response = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 }.Deserialize<Response>(result);
                                     if (process.ExitCode != 0 || response == null || response.error != null)
                                         throw new InvalidOperationException("텍스트를 읽지 못했습니다. 다시 시도해 주세요. 인식 도구를 시작하지 못하면 Microsoft Visual C++ 2015–2022 x64 런타임 설치를 확인해 주세요.");
-                                    return (response.text ?? "").Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+                                    response.text = (response.text ?? "").Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+                                    response.review = response.review ?? new string[0];
+                                    return response;
                                 }
                                 catch
                                 {
